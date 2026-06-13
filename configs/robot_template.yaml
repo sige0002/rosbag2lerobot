@@ -1,0 +1,150 @@
+# =============================================================================
+# Robot Configuration Template
+# =============================================================================
+# Copy this file and customise it for your own robot.
+# All lines starting with '#' are comments and can be removed.
+#
+# Required fields: robot_type, fps, task, observations, actions.
+# Optional fields: repo_id, custom_msgs, resampling.
+# =============================================================================
+
+# ---------- Basic metadata ---------------------------------------------------
+# robot_type:  Unique string identifying the robot hardware.
+# fps:         Target frame rate for the output dataset (Hz).
+# task:        Short description of the task being recorded.
+# repo_id:     (optional) HuggingFace repo id, e.g. "myorg/my-dataset".
+
+# robot_type: "my_robot"
+# fps: 30
+# task: "pick and place"
+# repo_id: "my_org/my_dataset"
+
+# ---------- Observations -----------------------------------------------------
+# Each entry maps a ROS2 topic to a LeRobot feature key.
+#
+# Fields per entry:
+#   key         (required) LeRobot feature key.
+#                           Convention:
+#                             observation.images.<camera_name>  – for images
+#                             observation.state                 – for robot state
+#   topic       (required) ROS2 topic name, e.g. "/joint_states"
+#   msg_type    (required) ROS2 message type, e.g. "sensor_msgs/msg/JointState"
+#   selector    (optional) Dot-separated path to extract a sub-field:
+#                           "position"        -> msg.position
+#                           "linear.x"        -> msg.linear.x
+#                           "position[0:3]"   -> first 3 elements of position
+#   dtype       (optional) Output dtype. One of:
+#                           float32 (default), float64, int32, int64,
+#                           uint8, bool, image, string
+#   image_size  (optional) [H, W] or [H, W, C] – required when dtype is "image"
+#   stamp_source (optional) "header" (default) or "receive"
+#   unit_conversion (optional) Multiply decoded values by this factor.
+#                              Example: 57.2958 to convert radians to degrees.
+#   optional    (optional) If true, the topic is allowed to be missing or
+#                          have 0 messages in the bag without error. Default: false.
+#   max_stamp_delay_ms (optional) Per-feature stale-message threshold (ms),
+#                          overriding resampling.max_stamp_delay_ms for this
+#                          feature. Discards a message whose header timestamp
+#                          lags its receive time by more than this.
+#                          Unset (default) = use the global threshold (if any).
+
+# observations:
+#   # ----- Camera example -----
+#   - key: "observation.images.top"
+#     topic: "/camera/top/image_raw/compressed"
+#     msg_type: "sensor_msgs/msg/CompressedImage"
+#     dtype: "image"
+#     image_size: [480, 640, 3]
+#     stamp_source: "header"
+#     max_stamp_delay_ms: 100   # per-feature override; drop frames whose
+#                               # header lags receive time by > 100 ms
+#
+#   # ----- Joint state example (standard sensor_msgs) -----
+#   - key: "observation.state"
+#     topic: "/joint_states"
+#     msg_type: "sensor_msgs/msg/JointState"
+#     selector: "position"
+#     dtype: "float32"
+#     stamp_source: "header"
+#
+#   # ----- Twist (velocity) example -----
+#   - key: "observation.velocity"
+#     topic: "/cmd_vel"
+#     msg_type: "geometry_msgs/msg/Twist"
+#     selector: "linear"                # extracts [x, y, z]
+#     dtype: "float32"
+#
+#   # ----- Selector with unit conversion (rad -> deg) -----
+#   - key: "observation.state_deg"
+#     topic: "/joint_states"
+#     msg_type: "sensor_msgs/msg/JointState"
+#     selector: "position"
+#     dtype: "float32"
+#     unit_conversion: 57.2958
+
+# ---------- Actions ----------------------------------------------------------
+# Same structure as observations. Typically one entry for the action space.
+
+# actions:
+#   - key: "action"
+#     topic: "/joint_commands"
+#     msg_type: "sensor_msgs/msg/JointState"
+#     selector: "position"
+#     dtype: "float32"
+#     stamp_source: "header"
+
+# ---------- Resampling -------------------------------------------------------
+# Controls how messages from different topics are synchronised to the target fps.
+#
+# default_policy:
+#   "hold"    – use the last received value (zero-order hold). Default.
+#   "nearest" – pick the temporally nearest message.
+#   "drop"    – drop the frame if no message is within tolerance.
+#
+# tolerance_ms:  Maximum time offset (ms) for resampling. Default: 50.0.
+#
+# align_to_required:
+#   true  – align the output frame grid to the required (non-optional)
+#           features rather than the earliest message on any topic. Default.
+#
+# max_stamp_delay_ms:
+#   Global stale-message threshold (ms). Discards a message when its header
+#   timestamp lags its bag receive time by more than this — typically an old
+#   latched value left over from a TRANSIENT_LOCAL QoS queue.
+#     (unset)  – disabled; messages are never dropped for stamp lag. Default.
+#     0        – any header that lags the receive time at all is discarded.
+#   Per-feature `max_stamp_delay_ms` (see below) overrides this value.
+
+# resampling:
+#   default_policy: "hold"
+#   tolerance_ms: 50.0
+#   align_to_required: true
+#   max_stamp_delay_ms: 200      # (unset = disabled, 0 = drop any lag > 0ms)
+
+# ---------- Custom messages --------------------------------------------------
+# Register custom .msg files so that the rosbags library can deserialize them.
+#
+# msg_file:  Path to the .msg file, relative to the config file or absolute.
+# package:   ROS2 package name for the message.
+
+# custom_msgs:
+#   - msg_file: "msgs/my_robot/MyCustomMsg.msg"
+#     package: "my_robot_msgs"
+#   - msg_file: "msgs/my_robot/AnotherMsg.msg"
+#     package: "my_robot_msgs"
+
+# =============================================================================
+# User-defined decoders
+# =============================================================================
+# You can override the built-in decoder for any msg_type by adding a "decoder"
+# key to the observation/action entry:
+#
+#   - key: "observation.state"
+#     topic: "/custom_topic"
+#     msg_type: "my_pkg/msg/CustomState"
+#     decoder: "my_package.decoders:decode_custom_state"
+#     dtype: "float32"
+#
+# The decoder string must be in "module:function" format.
+# The function signature must be:
+#   def decode_custom_state(msg, selector, config) -> np.ndarray | PIL.Image.Image

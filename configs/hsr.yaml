@@ -1,0 +1,99 @@
+# =============================================================================
+# Toyota HSR (Human Support Robot) Configuration - AIRoA MOMA Dataset
+# =============================================================================
+# Based on real ROS2 bags (converted from ROS1) from the AIRoA MOMA dataset.
+# https://github.com/airoa-org
+#
+# HSR robot: mobile manipulator with 5-DOF arm, 1-DOF gripper, pan-tilt head
+# Teleop interface: hsr_leader_teleop (operator-controlled demonstrations)
+#
+# Topic layout (from /hsrb namespace):
+#   - /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed  (head RGB, ~30Hz)
+#   - /hsrb/hand_camera/image_raw/compressed                  (hand camera, ~25Hz)
+#   - /hsrb/head_rgbd_sensor/depth_registered/image_raw/compressedDepth (depth, ~30Hz)
+#   - /hsrb/joint_states           (13 joints @ ~50Hz)
+#   - /hsrb/wrist_wrench/raw       (6D force/torque @ ~100Hz)
+#   - /hsrb/odom                   (odometry @ ~26Hz)
+#   - /hsrb/arm_trajectory_controller/command  (5-joint arm commands @ ~30Hz)
+#   - /hsrb/command_velocity       (base velocity commands @ ~30Hz)
+#
+# AIRoA meta.json provides:
+#   - run.instructions: task descriptions (e.g. "Press the button to turn on the desk lamp")
+#   - run.segments: time-segmented episodes with start/end times and success labels
+
+robot_type: "hsr"
+fps: 10
+task: "household manipulation"
+repo_id: "user/hsr_airoa_dataset"
+
+# =============================================================================
+# Observations
+# =============================================================================
+observations:
+  # All joint positions (13 joints @ ~50Hz)
+  # Joints: arm_flex, arm_lift, arm_roll, base_l_drive_wheel, base_r_drive_wheel,
+  #         base_roll, hand_l_spring_proximal, hand_motor, hand_r_spring_proximal,
+  #         head_pan, head_tilt, wrist_flex, wrist_roll
+  - key: "observation.state"
+    topic: "/hsrb/joint_states"
+    msg_type: "sensor_msgs/msg/JointState"
+    selector: "position"
+    dtype: "float32"
+    stamp_source: "header"
+
+  # Wrist force/torque 6D: [force_x, force_y, force_z, torque_x, torque_y, torque_z]
+  - key: "observation.wrench"
+    topic: "/hsrb/wrist_wrench/raw"
+    msg_type: "geometry_msgs/msg/WrenchStamped"
+    dtype: "float32"
+    stamp_source: "header"
+
+  # Head RGB camera (640x480, CompressedImage JPEG, ~30Hz)
+  - key: "observation.images.head_rgb"
+    topic: "/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed"
+    msg_type: "sensor_msgs/msg/CompressedImage"
+    dtype: "image"
+    image_size: [480, 640, 3]
+    stamp_source: "header"
+
+  # Hand camera (640x480, CompressedImage JPEG, ~25Hz)
+  - key: "observation.images.hand"
+    topic: "/hsrb/hand_camera/image_raw/compressed"
+    msg_type: "sensor_msgs/msg/CompressedImage"
+    dtype: "image"
+    image_size: [480, 640, 3]
+    stamp_source: "header"
+
+  # Odometry 13D: [pos_xyz(3), ori_xyzw(4), lin_vel_xyz(3), ang_vel_xyz(3)]
+  - key: "observation.odom"
+    topic: "/hsrb/odom"
+    msg_type: "nav_msgs/msg/Odometry"
+    dtype: "float32"
+    stamp_source: "header"
+
+# =============================================================================
+# Actions
+# =============================================================================
+actions:
+  # Arm trajectory command (5 joints: arm_flex, arm_lift, arm_roll, wrist_flex, wrist_roll)
+  # Extracts positions from the first waypoint of the JointTrajectory
+  - key: "action.arm_trajectory"
+    topic: "/hsrb/arm_trajectory_controller/command"
+    msg_type: "trajectory_msgs/msg/JointTrajectory"
+    selector: "positions"
+    dtype: "float32"
+    stamp_source: "header"
+
+  # Base velocity command (6D: linear xyz + angular xyz)
+  - key: "action.velocity"
+    topic: "/hsrb/command_velocity"
+    msg_type: "geometry_msgs/msg/Twist"
+    dtype: "float32"
+    stamp_source: "header"
+
+# =============================================================================
+# Resampling
+# =============================================================================
+resampling:
+  default_policy: "hold"
+  tolerance_ms: 100.0

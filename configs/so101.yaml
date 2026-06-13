@@ -1,0 +1,39 @@
+# SO-101 Robot Configuration
+# Single 6-axis arm robot for manipulation tasks.
+# Uses right-side convention; observation.state is padded to 7 dims
+# with a trailing 0 for the missing 7th joint.
+
+robot_type: "so101"
+fps: 30
+task: "manipulation"
+
+observations:
+  # Right wrist camera (compressed image)
+  - key: "observation.images.right_wrist"
+    topic: "/camera/right_wrist/image_raw/compressed"
+    msg_type: "sensor_msgs/msg/CompressedImage"
+    dtype: "image"
+    image_size: [480, 640, 3]
+    stamp_source: "header"
+
+  # Joint state observation (6 joints, padded to 7 with trailing zero)
+  # Joints: shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3
+  - key: "observation.state"
+    topic: "/joint_states"
+    msg_type: "sensor_msgs/msg/JointState"
+    selector: "position"
+    dtype: "float32"
+    stamp_source: "header"
+
+actions:
+  # Target joint positions (same 6 joints, padded to 7)
+  - key: "action"
+    topic: "/target_joint_positions"
+    msg_type: "sensor_msgs/msg/JointState"
+    selector: "position"
+    dtype: "float32"
+    stamp_source: "header"
+
+resampling:
+  default_policy: "hold"
+  tolerance_ms: 50.0

@@ -1,0 +1,99 @@
+name: Bug report
+description: Report unexpected behavior, a crash, or incorrect output from bagel.
+title: "[bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please complete the
+        sections below so the maintainers can reproduce and fix the issue.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have searched [existing issues](https://github.com/sige0002/bagel/issues?q=is%3Aissue) and this is not a duplicate.
+          required: true
+        - label: I am running the latest `main` (or a tagged release) and can reproduce the bug there.
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: |
+        When converting a 3-bag HSR dataset, the output mp4 is 2 frames
+        short of the parquet row count. Expected them to match.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal commands and inputs that reproduce the bug.
+      placeholder: |
+        1. `bagel convert --config configs/hsr.yaml --bags /path/to/bags --output /tmp/out`
+        2. `ls /tmp/out/videos/observation.images.front/chunk-000/`
+        3. Frame count in mp4 is N-2, parquet is N.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output / traceback
+      description: Paste the full error output. This will be rendered as a shell block, no backticks needed.
+      render: shell
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "Ubuntu 24.04 aarch64"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python --version`
+      placeholder: "Python 3.11.9"
+    validations:
+      required: true
+
+  - type: input
+    id: ffmpeg
+    attributes:
+      label: ffmpeg version
+      description: First line of `ffmpeg -version`
+      placeholder: "ffmpeg version 6.1.1-3ubuntu5+esm7"
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU / NVENC (if relevant)
+      description: Output of `nvidia-smi -L` and `ffmpeg -encoders | grep nvenc`. Leave blank if CPU-only.
+
+  - type: input
+    id: commit
+    attributes:
+      label: bagel commit / version
+      description: Output of `git rev-parse --short HEAD` or the release tag.
+      placeholder: "ec88065"
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Config file (robot_config.yaml)
+      description: Paste the relevant config (or attach). Scrub any private paths.
+      render: yaml

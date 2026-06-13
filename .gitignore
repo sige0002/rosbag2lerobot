@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+plan.md
+memo.md
+plan/
+.claude/
+
+# Local rosbag data (never commit raw bags or converted datasets)
+bagdata/
+test_bags/
+
+# Loose rosbag storage files, wherever they land
+*.bag
+*.mcap
+*.db3
+*.db3-shm
+*.db3-wal
+
+# Converted LeRobot datasets
+output/
+
+# Misc local / scratch
+*.log
+.ipynb_checkpoints/
