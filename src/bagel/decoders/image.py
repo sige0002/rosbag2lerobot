@@ -6,7 +6,9 @@ to ``PIL.Image.Image`` in RGB format.  Supports multiple pixel encodings
 the ``image_size`` config key.
 
 Compressed images are decoded using OpenCV for JPEG/PNG and fall back to
-PIL for other formats.
+PIL for other formats.  ``compressedDepth`` (RVL 圧縮の 16bit 深度) は専用の
+純 Python デコーダ（``_decode_rvl``）で復号し、8bit グレースケールへ正規化して
+動画特徴として保存する。
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ _ENCODING_INFO: dict[str, tuple[int, np.dtype]] = {
     "8UC3": (3, np.dtype("uint8")),
     "8UC4": (4, np.dtype("uint8")),
     "16UC1": (1, np.dtype("uint16")),
+    "mono16": (1, np.dtype("uint16")),  # 16UC1 のエイリアス（sample_bags の深度 raw）
     "32FC1": (1, np.dtype("float32")),
 }
 
@@ -101,7 +104,7 @@ def decode_image(
         img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2RGB)
     elif enc_key in ("mono8", "8UC1"):
         img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
-    elif enc_key == "16UC1":
+    elif enc_key in ("16UC1", "mono16"):
         # Normalize 16-bit to 8-bit for display
         img_array = (img_array / 256).astype(np.uint8)
         img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
@@ -119,6 +122,116 @@ def decode_image(
 
     pil_img = Image.fromarray(img_array, mode="RGB")
     return _resize_if_needed(pil_img, config)
+
+
+def _decode_rvl(buf: bytes, rows: int, cols: int) -> np.ndarray:
+    """RVL（Run-length / Variable-length）圧縮された深度ストリームを復号する。
+
+    ROS ``compressed_depth_image_transport`` の RVL アルゴリズム（Wilson 方式）の
+    純 Python 実装。3bit 単位の可変長グループを LSB から積み上げて値を復元し、
+    「ゼロ連 → 非ゼロ連（ジグザグ差分）」の繰り返しで全画素を再構成する。
+
+    Args:
+        buf: RVL ストリーム（``ConfigHeader`` と rows/cols を除いた本体）。
+        rows: 画像の行数（高さ）。
+        cols: 画像の列数（幅）。
+
+    Returns:
+        ``(rows, cols)`` の ``uint16`` 深度配列。
+    """
+    if rows < 0 or cols < 0:
+        raise ValueError(f"corrupt RVL stream: negative dimensions {rows}x{cols}")
+    num_pixels = rows * cols
+    # RVL ストリームは 32bit ワード列。長さが 4 の倍数でなければ破損とみなす
+    # （ROS 実装は常にワード境界で書き出す）。
+    if len(buf) % 4 != 0:
+        raise ValueError(
+            f"corrupt RVL stream: buffer length {len(buf)} is not a multiple of 4"
+        )
+    # 32bit ワード（リトルエンディアン）を MSB 側から 8 ニブルに展開して走査する。
+    words = np.frombuffer(buf, dtype="<u4")
+    shifts = np.array([28, 24, 20, 16, 12, 8, 4, 0], dtype=np.uint32)
+    nibbles = ((words[:, None] >> shifts) & 0xF).astype(np.uint8).ravel().tolist()
+    n_nibbles = len(nibbles)
+
+    out = np.zeros(num_pixels, dtype=np.uint16)
+    nidx = 0
+
+    def decode_vle() -> int:
+        nonlocal nidx
+        value = 0
+        shift = 0
+        while True:
+            if nidx >= n_nibbles:
+                raise ValueError("corrupt RVL stream: ran out of nibbles")
+            n = nibbles[nidx]
+            nidx += 1
+            value |= (n & 0x7) << shift
+            shift += 3
+            if not (n & 0x8):
+                return value
+
+    idx = 0
+    previous = 0
+    remaining = num_pixels
+    while remaining > 0:
+        zeros = decode_vle()  # ゼロ画素の連長（out は初期化済みなので index 送りのみ）
+        idx += zeros
+        remaining -= zeros
+        nonzeros = decode_vle()
+        remaining -= nonzeros
+        # 連長が残画素を超えると out への書き込みが配列外になる → 破損。
+        if remaining < 0 or idx + nonzeros > num_pixels:
+            raise ValueError("corrupt RVL stream: run length exceeds remaining pixels")
+        for _ in range(nonzeros):
+            positive = decode_vle()
+            delta = (positive >> 1) ^ -(positive & 1)  # ジグザグ復号
+            previous = (previous + delta) & 0xFFFF
+            out[idx] = previous
+            idx += 1
+    return out.reshape((rows, cols))
+
+
+def _decode_compressed_depth(data: bytes, fmt: str) -> np.ndarray:
+    """``compressedDepth`` ペイロードを ``uint16`` 深度配列へ復号する。
+
+    レイアウト: ``[0:12]`` = ConfigHeader、``[12:16]`` = cols(int32 LE)、
+    ``[16:20]`` = rows(int32 LE)、``[20:]`` = RVL ストリーム。実データ
+    （HSR）は ``16UC1; compressedDepth rvl`` のみ存在するため RVL のみ対応。
+
+    Args:
+        data: CompressedImage の ``data`` バイト列。
+        fmt: 小文字化した ``format`` 文字列。
+
+    Returns:
+        ``(rows, cols)`` の ``uint16`` 深度配列。
+
+    Raises:
+        ValueError: RVL 以外の format、またはヘッダが不足している場合。
+    """
+    if "rvl" not in fmt:
+        raise ValueError(f"Only RVL compressedDepth is supported, got format {fmt!r}")
+    if len(data) < 20:
+        raise ValueError("compressedDepth payload too short for header")
+    cols = int.from_bytes(data[12:16], "little")
+    rows = int.from_bytes(data[16:20], "little")
+    return _decode_rvl(data[20:], rows, cols)
+
+
+def _depth16_to_rgb(depth: np.ndarray) -> np.ndarray:
+    """16bit 深度を 8bit グレースケール RGB へ正規化する（4a: lossy 動画保存）。
+
+    既存の ``16UC1`` 経路と同じ ``>>8``（``/256``）固定スケールでフレーム間の
+    一貫性を保つ。
+
+    Args:
+        depth: ``uint16`` の ``(H, W)`` 深度配列。
+
+    Returns:
+        ``(H, W, 3)`` の ``uint8`` RGB 配列。
+    """
+    gray = (depth >> 8).astype(np.uint8)
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
 
 
 @register_decoder("sensor_msgs/msg/CompressedImage")
@@ -140,7 +253,11 @@ def decode_compressed_image(
 
     raw_data = bytes(msg.data)
 
-    if "jpeg" in fmt or "jpg" in fmt:
+    if "compresseddepth" in fmt:
+        depth = _decode_compressed_depth(raw_data, fmt)
+        img_array = _depth16_to_rgb(depth)
+        pil_img = Image.fromarray(img_array, mode="RGB")
+    elif "jpeg" in fmt or "jpg" in fmt:
         # Use OpenCV for JPEG decompression (handles more edge cases)
         buf = np.frombuffer(raw_data, dtype=np.uint8)
         img_array = cv2.imdecode(buf, cv2.IMREAD_COLOR)

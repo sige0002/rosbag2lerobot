@@ -205,6 +205,82 @@ class TestBuiltinDecoders:
         assert len(result) == 10
         assert result.dtype == np.float32
 
+    def test_pose_euler_selector(self):
+        """selector 'orientation.euler_xyz' returns 3 finite euler floats."""
+        from bagel.decoders.builtin import decode_pose
+        from bagel.transforms import quat_xyzw_to_euler
+
+        # A non-trivial quaternion (45deg about each axis-ish).
+        qx, qy, qz, qw = 0.2706, 0.2706, 0.6533, 0.6533
+        msg = SimpleNamespace(
+            position=SimpleNamespace(x=1.0, y=2.0, z=3.0),
+            orientation=SimpleNamespace(x=qx, y=qy, z=qz, w=qw),
+        )
+        result = decode_pose(msg, ["orientation.euler_xyz"], {})
+        assert len(result) == 3
+        assert result.dtype == np.float32
+        assert np.all(np.isfinite(result))
+        expected = quat_xyzw_to_euler(qx, qy, qz, qw, convention="xyz")
+        np.testing.assert_allclose(result, expected, atol=1e-5)
+
+    def test_pose_euler_with_normal_selectors(self):
+        """Mixing a position selector with an euler selector flattens correctly."""
+        from bagel.decoders.builtin import decode_pose
+        from bagel.transforms import quat_xyzw_to_euler
+
+        qx, qy, qz, qw = 0.0, 0.0, 0.0, 1.0
+        msg = SimpleNamespace(
+            position=SimpleNamespace(x=1.0, y=2.0, z=3.0),
+            orientation=SimpleNamespace(x=qx, y=qy, z=qz, w=qw),
+        )
+        result = decode_pose(
+            msg, ["position.x", "position.y", "orientation.euler_xyz"], {}
+        )
+        # 1 (x) + 1 (y) + 3 (euler) = 5 values
+        assert len(result) == 5
+        np.testing.assert_allclose(result[:2], [1.0, 2.0])
+        expected = quat_xyzw_to_euler(qx, qy, qz, qw, convention="xyz")
+        np.testing.assert_allclose(result[2:], expected, atol=1e-5)
+
+    def test_pose_normal_selector_unchanged(self):
+        """A non-euler selector still returns one value per entry (no regression)."""
+        from bagel.decoders.builtin import decode_pose
+
+        msg = SimpleNamespace(
+            position=SimpleNamespace(x=1.0, y=2.0, z=3.0),
+            orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+        )
+        result = decode_pose(msg, ["position.x", "orientation.w"], {})
+        np.testing.assert_allclose(result, [1.0, 1.0])
+
+    def test_imu_euler_selector(self):
+        """Imu 'orientation.euler_zyx' returns 3 finite euler floats (zyx order)."""
+        from bagel.decoders.builtin import decode_imu
+        from bagel.transforms import quat_xyzw_to_euler
+
+        qx, qy, qz, qw = 0.1, 0.2, 0.3, 0.9273
+        msg = SimpleNamespace(
+            orientation=SimpleNamespace(x=qx, y=qy, z=qz, w=qw),
+            angular_velocity=SimpleNamespace(x=0.1, y=0.2, z=0.3),
+            linear_acceleration=SimpleNamespace(x=0.0, y=0.0, z=9.81),
+        )
+        result = decode_imu(msg, ["orientation.euler_zyx"], {})
+        assert len(result) == 3
+        assert np.all(np.isfinite(result))
+        expected = quat_xyzw_to_euler(qx, qy, qz, qw, convention="zyx")
+        np.testing.assert_allclose(result, expected, atol=1e-5)
+
+    def test_euler_bare_selector(self):
+        """A bare 'euler_xyz' selector resolves the message itself as the quat."""
+        from bagel.decoders.builtin import _extract_by_selector
+        from bagel.transforms import quat_xyzw_to_euler
+
+        quat = SimpleNamespace(x=0.2706, y=0.2706, z=0.6533, w=0.6533)
+        result = _extract_by_selector(quat, "euler_xyz")
+        assert len(result) == 3
+        expected = quat_xyzw_to_euler(0.2706, 0.2706, 0.6533, 0.6533, convention="xyz")
+        np.testing.assert_allclose(result, expected, atol=1e-6)
+
     def test_joy_default(self):
         from bagel.decoders.builtin import decode_joy
 
@@ -255,6 +331,47 @@ class TestBuiltinDecoders:
         msg = SimpleNamespace(data="hello world")
         result = decode_string(msg, None, {})
         assert result == "hello world"
+
+
+def _rvl_encode(depth: np.ndarray) -> bytes:
+    """Test-only RVL encoder (inverse of ``image._decode_rvl``) for round-trips."""
+    flat = depth.astype(np.uint16).ravel().tolist()
+    nibbles: list[int] = []
+
+    def enc_vle(value: int) -> None:
+        while True:
+            n = value & 0x7
+            value >>= 3
+            nibbles.append(n | 0x8 if value else n)
+            if not value:
+                break
+
+    n = len(flat)
+    i = 0
+    previous = 0
+    while i < n:
+        z = 0
+        while i < n and flat[i] == 0:
+            z += 1
+            i += 1
+        enc_vle(z)
+        start = i
+        while i < n and flat[i] != 0:
+            i += 1
+        enc_vle(i - start)
+        for j in range(start, i):
+            delta = flat[j] - previous
+            previous = flat[j]
+            enc_vle((delta << 1) ^ (delta >> 31))  # zigzag encode
+    while len(nibbles) % 8:
+        nibbles.append(0)
+    out = bytearray()
+    for k in range(0, len(nibbles), 8):
+        word = 0
+        for j in range(8):
+            word |= (nibbles[k + j] & 0xF) << (28 - 4 * j)
+        out += int(word).to_bytes(4, "little")
+    return bytes(out)
 
 
 class TestImageDecoders:
@@ -329,6 +446,88 @@ class TestImageDecoders:
         result = decode_compressed_image(msg, None, {})
         assert isinstance(result, Image.Image)
         assert result.mode == "RGB"
+
+    def test_mono16_image(self):
+        from bagel.decoders.image import decode_image
+
+        h, w = 4, 6
+        data = np.full((h, w), 30000, dtype=np.uint16).tobytes()
+        msg = SimpleNamespace(
+            data=data, height=h, width=w, step=w * 2, encoding="mono16"
+        )
+        result = decode_image(msg, None, {})
+        assert result.mode == "RGB"
+        assert result.size == (w, h)
+
+    def test_compressed_depth_rvl_roundtrip(self):
+        from bagel.decoders.image import (
+            _decode_compressed_depth,
+            _decode_rvl,
+            decode_compressed_image,
+        )
+
+        depth = np.array(
+            [
+                [0, 0, 100, 101, 0, 0],
+                [0, 300, 305, 0, 0, 500],
+                [501, 502, 0, 0, 0, 0],
+                [0, 1000, 999, 998, 0, 1],
+            ],
+            dtype=np.uint16,
+        )
+        rows, cols = depth.shape
+        stream = _rvl_encode(depth)
+
+        # 純関数 RVL の round-trip は完全一致でなければならない。
+        assert np.array_equal(_decode_rvl(stream, rows, cols), depth)
+
+        # ConfigHeader(12) + cols + rows + RVL を組んでデコーダ経路を検証。
+        payload = (
+            b"\x00" * 12
+            + int(cols).to_bytes(4, "little")
+            + int(rows).to_bytes(4, "little")
+            + stream
+        )
+        assert np.array_equal(
+            _decode_compressed_depth(payload, "16uc1; compresseddepth rvl"), depth
+        )
+
+        msg = SimpleNamespace(data=payload, format="16UC1; compressedDepth rvl")
+        pil = decode_compressed_image(msg, None, {})
+        assert isinstance(pil, Image.Image)
+        assert pil.mode == "RGB"
+        assert pil.size == (cols, rows)
+
+    def test_compressed_depth_non_rvl_raises(self):
+        from bagel.decoders.image import decode_compressed_image
+
+        msg = SimpleNamespace(data=b"\x00" * 24, format="16UC1; compressedDepth png")
+        with pytest.raises(ValueError, match="RVL"):
+            decode_compressed_image(msg, None, {})
+
+    def test_rvl_odd_length_raises_valueerror(self):
+        from bagel.decoders.image import _decode_rvl
+
+        # Buffer length not a multiple of 4 -> clean ValueError, not the raw
+        # ValueError np.frombuffer would otherwise raise.
+        with pytest.raises(ValueError, match="multiple of 4"):
+            _decode_rvl(b"\x00\x00\x00", 2, 2)
+
+    def test_rvl_truncated_raises_valueerror(self):
+        from bagel.decoders.image import _decode_rvl
+
+        depth = np.array(
+            [[0, 100, 101, 0], [200, 201, 0, 300], [0, 0, 400, 401]],
+            dtype=np.uint16,
+        )
+        rows, cols = depth.shape
+        stream = _rvl_encode(depth)
+        assert len(stream) >= 8  # multi-word, so truncation loses real data.
+        # Truncate to one word: the decoder runs out of nibbles before all
+        # pixels are produced -> ValueError (not IndexError).
+        truncated = stream[:4]
+        with pytest.raises(ValueError, match="corrupt RVL"):
+            _decode_rvl(truncated, rows, cols)
 
     def test_unsupported_encoding(self):
         from bagel.decoders.image import decode_image

@@ -10,7 +10,9 @@
 # Topic layout (from /hsrb namespace):
 #   - /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed  (head RGB, ~30Hz)
 #   - /hsrb/hand_camera/image_raw/compressed                  (hand camera, ~25Hz)
-#   - /hsrb/head_rgbd_sensor/depth_registered/image_raw/compressedDepth (depth, ~30Hz)
+#   - /hsrb/head_rgbd_sensor/depth_registered/image_raw/compressedDepth (depth, RVL 16bit)
+#       ※ 一部の bag は .../depth_registered/image_rect_raw/compressedDepth（トピック名が2系統）。
+#         深度は下記「Depth (optional)」ブロックのコメントを外せば取り込める（8bit動画として保存）。
 #   - /hsrb/joint_states           (13 joints @ ~50Hz)
 #   - /hsrb/wrist_wrench/raw       (6D force/torque @ ~100Hz)
 #   - /hsrb/odom                   (odometry @ ~26Hz)
@@ -63,6 +65,17 @@ observations:
     dtype: "image"
     image_size: [480, 640, 3]
     stamp_source: "header"
+
+  # Depth (optional) — RVL 圧縮の 16bit 深度を 8bit グレースケール動画として保存。
+  # bag によりトピック名が image_raw / image_rect_raw のどちらかなので、対象 bag に
+  # 合わせて topic を選び、optional: true のまま使うこと（未対応 bag では自動でドロップ）。
+  # - key: "observation.images.head_depth"
+  #   topic: "/hsrb/head_rgbd_sensor/depth_registered/image_raw/compressedDepth"
+  #   msg_type: "sensor_msgs/msg/CompressedImage"
+  #   dtype: "image"
+  #   image_size: [480, 640]
+  #   optional: true
+  #   stamp_source: "header"
 
   # Odometry 13D: [pos_xyz(3), ori_xyzw(4), lin_vel_xyz(3), ang_vel_xyz(3)]
   - key: "observation.odom"
