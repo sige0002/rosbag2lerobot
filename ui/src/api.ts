@@ -35,9 +35,38 @@ export interface BrowseResponse {
   bags: string[];
 }
 
+/** Per-topic fps stats in an inspect report (fields may be null). */
+export interface InspectFps {
+  mean: number | null;
+  min: number | null;
+  max: number | null;
+  std: number | null;
+  p01: number | null;
+  p99: number | null;
+}
+
+/** One topic row inside an inspected bag. */
+export interface InspectTopic {
+  name: string;
+  msg_type: string;
+  msg_count: number;
+  fps: InspectFps;
+  head_lag_ms: number | null;
+  tail_lag_ms: number | null;
+  [key: string]: unknown;
+}
+
+/** One bag's inspect result. */
+export interface InspectBag {
+  bag: string;
+  topics: InspectTopic[];
+  duration_s?: number;
+  [key: string]: unknown;
+}
+
 export interface InspectResponse {
   command: string;
-  report: unknown;
+  report: { bags: InspectBag[] };
 }
 
 export interface ScaffoldResponse {
@@ -96,6 +125,39 @@ export interface QualityReport {
 export interface QualityResponse {
   command: string;
   report: QualityReport;
+}
+
+/** A shipped robot config for the template picker. */
+export interface ConfigListEntry {
+  name: string;
+  robot_type: string;
+}
+
+export interface ConfigListResponse {
+  command: string;
+  configs: ConfigListEntry[];
+}
+
+export interface ConfigTemplateResponse {
+  command: string;
+  name: string;
+  yaml: string;
+}
+
+/** Global option fields patched into a config by `POST /api/config-apply`. */
+export interface ConfigApplyOptions {
+  robot_type?: string;
+  task?: string;
+  fps?: number;
+  resampling_policy?: string;
+  stamp_source?: string;
+  tolerance_ms?: number;
+  align_to_required?: boolean;
+}
+
+export interface ConfigApplyResponse {
+  command: string;
+  yaml: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +297,21 @@ export function validateDataset(dataset: string): Promise<ValidateDatasetRespons
 
 export function qualityReport(dataset: string): Promise<QualityResponse> {
   return request<QualityResponse>("/api/quality-report", { dataset });
+}
+
+export function configList(): Promise<ConfigListResponse> {
+  return get<ConfigListResponse>("/api/config-list");
+}
+
+export function configTemplate(name: string): Promise<ConfigTemplateResponse> {
+  return get<ConfigTemplateResponse>(`/api/config-template?name=${encodeURIComponent(name)}`);
+}
+
+export function configApply(
+  configYaml: string,
+  options: ConfigApplyOptions,
+): Promise<ConfigApplyResponse> {
+  return request<ConfigApplyResponse>("/api/config-apply", { yaml: configYaml, options });
 }
 
 /** Build the iframe URL for the HTML preview (token passed as a query param). */

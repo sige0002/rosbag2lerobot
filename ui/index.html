@@ -89,6 +89,76 @@
         font-size: 12px;
         font-weight: 600;
       }
+
+      /* Tab navigation */
+      nav.tabs {
+        display: flex;
+        gap: 4px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 18px;
+      }
+      .tab-btn {
+        border: 1px solid transparent;
+        border-bottom: none;
+        border-radius: 7px 7px 0 0;
+        background: none;
+        color: var(--muted);
+        padding: 9px 16px;
+        font-weight: 600;
+        margin-bottom: -1px;
+      }
+      .tab-btn:hover:not(:disabled) {
+        color: var(--fg);
+        border-color: transparent;
+      }
+      .tab-btn .step {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #e5e8ec;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 600;
+        margin-right: 6px;
+      }
+      .tab-btn[aria-selected="true"] {
+        color: var(--accent);
+        background: var(--panel);
+        border-color: var(--border);
+        border-bottom-color: var(--panel);
+      }
+      .tab-btn[aria-selected="true"] .step {
+        background: var(--accent);
+        color: var(--accent-fg);
+      }
+      .tab-section[hidden] {
+        display: none;
+      }
+      .hint {
+        color: var(--warn);
+        background: var(--warn-bg);
+        border-radius: 5px;
+        padding: 7px 10px;
+        font-size: 13px;
+        margin: 0 0 12px;
+      }
+      .hint[hidden] {
+        display: none;
+      }
+      fieldset.options {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px 14px 4px;
+        margin: 0 0 12px;
+      }
+      fieldset.options legend {
+        color: var(--muted);
+        font-size: 12px;
+        padding: 0 6px;
+      }
       .row {
         display: flex;
         flex-wrap: wrap;
@@ -376,8 +446,23 @@
     </header>
 
     <main>
-      <!-- Panel 1: Browse bag -->
-      <section class="panel" id="panel-browse">
+      <nav class="tabs" role="tablist">
+        <button class="tab-btn" id="tab-bags" type="button" role="tab" aria-selected="true" aria-controls="panel-browse">
+          <span class="step">1</span>Bags
+        </button>
+        <button class="tab-btn" id="tab-config" type="button" role="tab" aria-selected="false" aria-controls="panel-config">
+          <span class="step">2</span>Config
+        </button>
+        <button class="tab-btn" id="tab-convert" type="button" role="tab" aria-selected="false" aria-controls="panel-convert">
+          <span class="step">3</span>Convert
+        </button>
+        <button class="tab-btn" id="tab-results" type="button" role="tab" aria-selected="false" aria-controls="panel-quality">
+          <span class="step">4</span>Results
+        </button>
+      </nav>
+
+      <!-- Tab 1: Bags (browse + inspect) -->
+      <section class="panel tab-section" id="panel-browse" role="tabpanel" aria-labelledby="tab-bags">
         <h2><span class="step">1</span> Browse &amp; inspect bags</h2>
         <div class="row">
           <label for="root-select">Root</label>
@@ -395,20 +480,65 @@
         <div id="inspect-report"></div>
       </section>
 
-      <!-- Panel 2: Scaffold + edit config -->
-      <section class="panel" id="panel-scaffold">
-        <h2><span class="step">2</span> Scaffold &amp; validate config</h2>
+      <!-- Tab 2: Config (template + options + YAML) -->
+      <section class="panel tab-section" id="panel-config" role="tabpanel" aria-labelledby="tab-config" hidden>
+        <h2><span class="step">2</span> Build &amp; validate config</h2>
+        <div class="hint" id="config-hint" hidden>Select at least one bag in the Bags tab to scaffold/validate.</div>
+
+        <div class="row">
+          <label for="config-template-select">Template</label>
+          <select id="config-template-select"></select>
+          <button id="config-template-btn" type="button">Load template</button>
+          <button id="scaffold-btn" type="button">Scaffold from bag</button>
+        </div>
         <div class="row">
           <label for="scaffold-robot-type">robot_type</label>
           <input type="text" id="scaffold-robot-type" placeholder="(optional)" />
           <label for="scaffold-task">task</label>
           <input type="text" id="scaffold-task" placeholder="(optional)" />
-          <label for="scaffold-fps">fps</label>
+          <label for="scaffold-fps">fps (scaffold)</label>
           <input type="number" id="scaffold-fps" min="1" step="1" placeholder="(opt)" />
-          <button id="scaffold-btn" type="button">Generate config</button>
         </div>
+        <div id="config-template-cmd"></div>
         <div id="scaffold-cmd"></div>
-        <textarea id="config-text" spellcheck="false" placeholder="# Generated config YAML appears here (editable)."></textarea>
+        <div id="scaffold-status"></div>
+
+        <fieldset class="options">
+          <legend>Global options (only set fields are applied)</legend>
+          <div class="row">
+            <label for="opt-robot-type">robot_type</label>
+            <input type="text" id="opt-robot-type" placeholder="(leave blank to skip)" />
+            <label for="opt-task">task</label>
+            <input type="text" id="opt-task" placeholder="(blank)" />
+            <label for="opt-fps">fps</label>
+            <input type="number" id="opt-fps" min="1" step="1" placeholder="(opt)" />
+          </div>
+          <div class="row">
+            <label for="opt-policy">resampling policy</label>
+            <select id="opt-policy">
+              <option value="">(unchanged)</option>
+              <option value="hold">hold</option>
+              <option value="nearest">nearest</option>
+              <option value="drop">drop</option>
+            </select>
+            <label for="opt-stamp-source">stamp_source</label>
+            <select id="opt-stamp-source">
+              <option value="">(unchanged)</option>
+              <option value="header">header</option>
+              <option value="receive">receive</option>
+            </select>
+            <label for="opt-tolerance">tolerance_ms</label>
+            <input type="number" id="opt-tolerance" min="0" step="1" placeholder="(opt)" />
+            <label for="opt-align"><input type="checkbox" id="opt-align" /> align_to_required</label>
+          </div>
+          <div class="row">
+            <button id="config-apply-btn" type="button">Apply options</button>
+          </div>
+          <div id="config-apply-cmd"></div>
+          <div id="config-apply-status"></div>
+        </fieldset>
+
+        <textarea id="config-text" spellcheck="false" placeholder="# Load a template, scaffold from a bag, or paste config YAML here (editable)."></textarea>
         <div class="row">
           <button id="validate-config-btn" class="primary" type="button">Validate config</button>
         </div>
@@ -417,9 +547,10 @@
         <div id="validate-config-report"></div>
       </section>
 
-      <!-- Panel 3: Convert -->
-      <section class="panel" id="panel-convert">
+      <!-- Tab 3: Convert -->
+      <section class="panel tab-section" id="panel-convert" role="tabpanel" aria-labelledby="tab-convert" hidden>
         <h2><span class="step">3</span> Convert</h2>
+        <div class="hint" id="convert-hint" hidden>Select bags and build a config first.</div>
         <div class="row">
           <label for="convert-output">output (relative)</label>
           <input type="text" id="convert-output" placeholder="e.g. output/my_dataset" />
@@ -442,9 +573,10 @@
         <div id="convert-summary"></div>
       </section>
 
-      <!-- Panel 4: Quality + preview -->
-      <section class="panel" id="panel-quality">
+      <!-- Tab 4: Results (quality + preview) -->
+      <section class="panel tab-section" id="panel-quality" role="tabpanel" aria-labelledby="tab-results" hidden>
         <h2><span class="step">4</span> Quality &amp; preview</h2>
+        <div class="hint" id="results-hint" hidden>Run a conversion or enter a dataset path to inspect results.</div>
         <div class="row">
           <label for="dataset-input">dataset (relative)</label>
           <input type="text" id="dataset-input" placeholder="(defaults to last convert output)" />
