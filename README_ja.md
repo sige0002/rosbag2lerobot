@@ -111,7 +111,6 @@ bagel quality-report   --dataset /path/to/output_dataset/ -o report.json
 | `preview` | データセットの自己完結型 HTML レポート（サマリ・品質・サンプルフレーム・統計）を生成。読み取り専用・サーバ不要。 |
 | `push-to-hub` | 生成データセットを HuggingFace Hub にアップロードし、データセットカードを自動生成（任意機能。`--dry-run` は計画のみ）。 |
 | `to-mcap` | ROS1 `.bag` を ROS2 MCAP bag に変換。 |
-| `ui` | bag 閲覧 → scaffold → convert → 品質確認のループを回す localhost（127.0.0.1 限定）コントロール UI を起動。フロントエンドとバックエンドを分離し、各操作で等価な `bagel ...` CLI コマンドを表示。 |
 
 各コマンドの全オプションは
 [`docs/cli_reference.md`](docs/cli_reference.md) を参照してください。
@@ -151,68 +150,6 @@ bagel/ffmpeg バージョン・実行時刻）と `job_summary.json`（成功/�
 した。深度は `video.is_depth_map: true` を持つ 8bit グレースケール動画として
 保存されます（8bit のため精度は低下します）。`configs/hsr.yaml` に有効化方法
 を示すコメント付き「Depth (optional)」ブロックがあります。
-
-## ローカル UI
-
-`bagel ui` は **localhost（127.0.0.1 限定）コントロール UI** を起動し、bag 閲覧
-→ config の scaffold/編集 → convert（進捗表示付き）→ 品質確認 + preview のループを
-ブラウザで回せるようにします。フロントエンドとバックエンドは **分離**されており、
-Python バックエンド（標準ライブラリの `http.server`。新規依存なし）が許可リスト式の
-JSON API の背後にすべての権限を持ち、TypeScript + HTML のフロントエンド
-（[`ui/`](ui/README.md)）は表示専用です。**CLI が真実の源（source of truth）**で、
-各 UI 操作は等価な `bagel ...` コマンドを表示し、コピーできます。
-
-Docker ではなくホストプロセスとして動くため、許可リストのルート配下にある bag に
-どこからでも到達できます。セキュリティ: `127.0.0.1` のみにバインドし、起動ごとの
-セッショントークンを発行（URL に `?token=...` として表示）、ファイルアクセスは
-`--bags-root` / `--output-root` 配下に限定します（パストラバーサルは遮断）。
-ネットワークには公開されません。
-
-フロントエンドを一度ビルドしてから起動します:
-
-```bash
-# 1. フロントエンドのバンドルをビルド（node/npm が必要。ビルド時のみ）
-cd ui && npm install && npm run build && cd ..
-
-# 2. UI を起動（ランタイムは Python のみ）
-bagel ui \
-  --bags-root /path/to/bags \
-  --output-root /path/to/output
-```
-
-フロントエンドのビルド詳細は [`ui/README.md`](ui/README.md)、`bagel ui` の全
-オプション・セキュリティモデル・実例は
-[`docs/cli_reference.md`](docs/cli_reference.md#ui) を参照してください。
-
-### UI の使い方
-
-閲覧パネルで `[dir]` をクリックして辿り、`[bag]` 表示の項目が見えたら
-**その bag のチェックボックスをオンにして選択**します。**Inspect** や scaffold の
-ボタンは「**bag を1つ以上選択**」した時だけ押せます（フォルダに入っただけ・指定した
-だけでは押せません）。`--bags-root` は **bag フォルダを直接含むディレクトリ**を指定
-すると `[bag]` がすぐ出ます（1階層上だと `[dir]` ばかりで、中に入るまで選択できません）。
-ROS1 の `.bag` は bag として表示されません — 先に `bagel to-mcap` で変換してください。
-
-### リモートアクセス（サーバが SSH 先にある場合）
-
-`bagel ui` は `127.0.0.1` のみにバインドするため、別マシンからは **SSH ポート
-フォワード**で到達します（ネットワークに直接公開しない）:
-
-```bash
-# リモート（bag がある側）: 表示される URL とトークンを控える
-bagel ui --bags-root /abs/bags --output-root /abs/out --port 8765 --no-open
-
-# 手元のラップトップ: ポート転送（このターミナルは開いたまま）
-ssh -N -L 8765:127.0.0.1:8765 user@remote
-
-# ラップトップのブラウザで、表示された URL を開く
-http://127.0.0.1:8765/?token=XXXX
-```
-
-開くときは必ず **`127.0.0.1` か `localhost`** で。`127.0.0.1` の URL は「開いた
-PC 自身」を指し、また `Host` ヘッダが loopback 以外のリクエストは
-`403 Host not allowed.` で拒否されます（DNS-rebinding 対策）。`?token=...` は末尾まで
-完全にコピーしてください（ページ自体はトークン無しでも開きますが、API 呼び出しに必要）。
 
 ## CLI オプション一覧
 

@@ -14,7 +14,6 @@
 | [`validate-msg`](#validate-msg) | `.msg` ファイルの構文チェック |
 | [`preview`](#preview) | 生成済みデータセットの自己完結型 HTML プレビューレポートを生成 |
 | [`push-to-hub`](#push-to-hub) | 生成済みデータセットを HuggingFace Hub にアップロード（データセットカード付き） |
-| [`ui`](#ui) | localhost（127.0.0.1 限定）コントロール UI を起動（閲覧 → scaffold → convert → 品質確認） |
 
 ## 目次
 
@@ -42,7 +41,6 @@
 - [`validate-msg`](#validate-msg)
 - [`preview`](#preview)
 - [`push-to-hub`](#push-to-hub)
-- [`ui`](#ui)
 - [実例集](#実例集)
 
 ## 共通オプション
@@ -525,87 +523,6 @@ bagel to-mcap -o /path/to/out_bags/ /path/to/ros1_bags/
 | `--json` |  | off | 変換結果 dict を stdout に JSON 出力（人間向け summary は抑制）。 |
 
 `SOURCES` は `.bag` ファイルまたはディレクトリ（再帰的に `*.bag` を探索）を指定できます。
-
-## `ui`
-
-bag 閲覧 → config の scaffold/編集 → convert（進捗表示付き）→ 品質確認 + preview のループを回す **localhost コントロール UI** を起動します。`127.0.0.1` のみにバインドし、起動ごとのセッショントークンを発行し、フロントエンドのバンドルと許可リスト式 JSON API を配信します。トークン付き URL を表示し（`--no-open` を付けない限り）ブラウザで開きます。
-
-```bash
-bagel ui \
-  --bags-root /path/to/ros_sample_bag_dir/ \
-  --output-root /path/to/output/
-```
-
-### フロントエンド／バックエンド分離
-
-- **バックエンド（Python）.** 標準ライブラリの `http.server` だけで動き、**新規依存はありません**。すべての権限（ファイルアクセス・プロセス実行）は許可リスト式 JSON API の背後に閉じ込められています。`bagel` の `--json` API と `bagel preview` を再利用します。
-- **フロントエンド（TypeScript + HTML）.** [`ui/`](../ui/README.md) にあり、esbuild でバンドルされます。**表示専用**で権限を持ちません。各 UI 操作には等価な `bagel ...` CLI コマンドが表示され、コピーできます（**CLI が真実の源**）。
-- Docker ではなく **ホストプロセス**として動くため、許可リストのルート配下にある bag にどこからでも到達できます。
-
-### フロントエンドのビルド（前提）
-
-`bagel ui` は `ui/dist/` がビルド済みならそれを配信し、未ビルドなら同梱のプレースホルダページにフォールバックします。実際の UI を使うには、初回に一度フロントエンドをビルドしてください（**node/npm はビルド時のみ必要**。ランタイムは Python のみ）。
-
-```bash
-cd ui
-npm install        # esbuild + typescript（devDependencies のみ）
-npm run build      # typecheck + bundle -> ui/dist/
-```
-
-出力は `ui/dist/`（`index.html` + `bundle.js`）。詳細は [`ui/README.md`](../ui/README.md) を参照。
-
-### オプション
-
-| オプション | 必須 | デフォルト | 説明 |
-|---|---|---|---|
-| `--bags-root DIRECTORY` | ✓ | — | bag を閲覧・読み取りできる許可ルートディレクトリ。**繰り返し指定可**（`--bags-root A --bags-root B`）。 |
-| `--output-root DIRECTORY` | ✓ | — | 変換出力 + データセット読み取りの許可ルートディレクトリ。 |
-| `--port INTEGER` |  | `8765` | `127.0.0.1` でバインドする TCP ポート。 |
-| `--no-open` |  | off | 起動時にトークン付き URL をブラウザで開かない。 |
-
-### セキュリティ
-
-- **`127.0.0.1` 限定バインド.** `--host` オプションはなく、ネットワークには公開されません。
-- **起動ごとのセッショントークン.** 起動のたびにトークンを発行し、URL に `?token=...` として表示します。API はこのトークンを要求します。
-- **ファイルアクセスの限定.** すべてのファイルアクセスは `--bags-root` / `--output-root` 配下に限定され、**パストラバーサルは遮断**されます。
-- **Host ヘッダ検証.** `Host` が `127.0.0.1` / `localhost` / `[::1]` 以外のリクエストは `403 Host not allowed.` で拒否します（DNS-rebinding 対策）。ブラウザでは必ず `127.0.0.1` か `localhost` で開いてください。
-
-### UI の使い方
-
-1. 閲覧パネルで `[dir]` をクリックして辿り、`[bag]` の項目を表示する。
-2. その bag の**チェックボックスをオンにして選択**する（フォルダに入る/指定するだけでは不可）。
-3. **bag を1つ以上選択**すると `Inspect` / `scaffold` が押せるようになる。
-
-`--bags-root` は **bag フォルダを直接含むディレクトリ**を指定すると `[bag]` がすぐ出ます（1階層上だと `[dir]` ばかりで、中に入るまで選択肢が出ません）。ROS1 の `.bag` は bag として表示されないため、先に `bagel to-mcap` で変換してください。
-
-### リモートアクセス（SSH トンネル）
-
-`bagel ui` は `127.0.0.1` 限定バインドなので、サーバが SSH 先にある場合は手元から **SSH ポートフォワード**で到達します（ネットワークに直接公開しない）:
-
-```bash
-# リモート（bag がある側）: 表示される URL とトークンを控える
-bagel ui --bags-root /abs/bags --output-root /abs/out --port 8765 --no-open
-
-# 手元のラップトップ: ポート転送（このターミナルは開いたまま）
-ssh -N -L 8765:127.0.0.1:8765 user@remote
-
-# ラップトップのブラウザで、表示された URL を 127.0.0.1 / localhost で開く
-#   http://127.0.0.1:8765/?token=XXXX
-```
-
-`?token=...` は末尾まで完全にコピーしてください（ページ自体はトークン無しでも開きますが、API 呼び出しに必要）。
-
-### 例
-
-```bash
-# 複数の bag ルートを許可し、ポートを変えてブラウザは開かない
-bagel ui \
-  --bags-root /data/hsr_bags/ \
-  --bags-root /data/so101_bags/ \
-  --output-root /data/datasets/ \
-  --port 9000 \
-  --no-open
-```
 
 ## 実例集
 

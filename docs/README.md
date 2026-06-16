@@ -10,7 +10,6 @@
 | YAML 設定を書きたい／オプションの意味を調べたい | [configuration.md](configuration.md) |
 | bag ごとに task / subtask を指定したい | [task_json.md](task_json.md) |
 | 新しいロボット（bag セット）を追加したい | [adding_new_robot.md](adding_new_robot.md) |
-| ブラウザで閲覧 → scaffold → convert → 品質確認を回したい（ローカル UI） | [cli_reference.md（`ui`）](cli_reference.md#ui) / [ui/README.md](../ui/README.md) |
 
 ## 仕組みを知る
 
@@ -43,7 +42,6 @@
 | `inspect`, `validate-msg`, `to-mcap` サブコマンド | [cli_reference.md](cli_reference.md) |
 | `scaffold`, `validate-config`, `validate-dataset`, `quality-report`, `audit-timestamps` サブコマンド | [cli_reference.md](cli_reference.md) |
 | `preview`, `push-to-hub` サブコマンド | [cli_reference.md](cli_reference.md) |
-| `ui` サブコマンド（ローカル UI・FE/BE 分離・セッショントークン・FE ビルド） | [cli_reference.md](cli_reference.md#ui), [ui/README.md](../ui/README.md) |
 | `convert --resume`（再実行ガード） | [cli_reference.md](cli_reference.md) |
 | `convert --json` / `--quiet` / `--skip-failed`（進捗・失敗継続） | [cli_reference.md](cli_reference.md) |
 | `conversion_log.json` / `job_summary.json`（ランメタデータ） | [cli_reference.md](cli_reference.md) |

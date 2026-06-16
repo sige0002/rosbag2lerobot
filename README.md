@@ -111,7 +111,6 @@ bagel quality-report   --dataset /path/to/output_dataset/ -o report.json
 | `preview` | Write a self-contained static HTML report (summary, quality, sample frames, stats) for a dataset; read-only, no server. |
 | `push-to-hub` | Upload a generated dataset to the HuggingFace Hub with an auto-generated dataset card (opt-in; `--dry-run` plans only). |
 | `to-mcap` | Convert ROS1 `.bag` recordings to ROS2 MCAP bags. |
-| `ui` | Launch a localhost (127.0.0.1-only) control UI for the browse → scaffold → convert → quality loop. Frontend/backend separated; every action shows its equivalent `bagel ...` CLI command. |
 
 Full options for every command are in
 [`docs/cli_reference.md`](docs/cli_reference.md).
@@ -153,69 +152,6 @@ supported. Depth is stored as an 8-bit grayscale video feature with
 `video.is_depth_map: true` — note this is lossy 8-bit, so precision is reduced.
 `configs/hsr.yaml` has a commented "Depth (optional)" block showing how to
 enable it.
-
-## Local UI
-
-`bagel ui` launches a **localhost (127.0.0.1-only) control UI** that walks the
-browse bag → scaffold/edit config → convert (with progress) → quality + preview
-loop in the browser. The frontend and backend are **separated**: a Python
-backend (stdlib `http.server`, no new dependencies) holds all privilege behind
-an allow-listed JSON API, while the TypeScript + HTML frontend (in
-[`ui/`](ui/README.md)) is presentation-only. The **CLI is the source of truth** —
-every UI action shows (and lets you copy) the equivalent `bagel ...` command.
-
-It runs as a host process (not Docker), so it can reach bags anywhere under the
-allow-listed roots. Security: it binds `127.0.0.1` only, mints a per-launch
-session token (printed in the URL as `?token=...`), and confines all filesystem
-access to the `--bags-root` / `--output-root` directories (path traversal is
-blocked). It is not network-exposed.
-
-Build the frontend once, then launch:
-
-```bash
-# 1. Build the frontend bundle (needs node/npm; only for building)
-cd ui && npm install && npm run build && cd ..
-
-# 2. Launch the UI (Python only at runtime)
-bagel ui \
-  --bags-root /path/to/bags \
-  --output-root /path/to/output
-```
-
-Frontend build details are in [`ui/README.md`](ui/README.md); full `bagel ui`
-options, the security model, and examples are in
-[`docs/cli_reference.md`](docs/cli_reference.md#ui).
-
-### Using the UI
-
-In the browse panel, navigate (click `[dir]`) until you see `[bag]` entries, then
-**tick a bag's checkbox to select it** — the **Inspect** / scaffold buttons only
-become clickable once at least one bag is selected (entering a folder is not
-selecting). Point `--bags-root` at the directory that *directly contains* your
-bag folders so they appear as `[bag]` immediately; a folder one level too high
-shows only `[dir]` and nothing is selectable until you click in. ROS1 `.bag`
-recordings are not shown as bags — convert them with `bagel to-mcap` first.
-
-### Remote access (server on an SSH host)
-
-`bagel ui` binds `127.0.0.1` only, so from another machine reach it through an
-SSH port-forward (don't expose it on the network):
-
-```bash
-# on the remote (where the bags live): note the printed URL + token
-bagel ui --bags-root /abs/bags --output-root /abs/out --port 8765 --no-open
-
-# on your laptop: forward the port (keep this terminal open)
-ssh -N -L 8765:127.0.0.1:8765 user@remote
-
-# then open the printed URL in your laptop browser
-http://127.0.0.1:8765/?token=XXXX
-```
-
-Open it via **`127.0.0.1` or `localhost` only** — a `127.0.0.1` URL points at the
-machine you open it on, and requests carrying any other `Host` header are
-rejected with `403 Host not allowed.` (DNS-rebinding defence). Copy the full
-`?token=...`: the page itself loads without it, but the API calls need it.
 
 ## CLI Options
 

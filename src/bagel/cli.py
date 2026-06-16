@@ -26,9 +26,6 @@ Provides the following Click commands:
 - ``push-to-hub``      -- Upload a generated dataset to the HuggingFace Hub and
   generate a dataset card (opt-in; ``--dry-run`` plans the upload only).
 - ``to-mcap``          -- Convert ROS1 ``.bag`` recordings to ROS2 MCAP bags.
-- ``ui``               -- Launch a localhost (127.0.0.1) control UI for the
-  scaffold->convert->quality loop. Separated TypeScript frontend + allow-listed,
-  token-gated Python backend; runs as a host process (not Docker).
 
 All report commands (``validate-config`` / ``validate-dataset`` /
 ``quality-report`` / ``audit-timestamps`` / ``inspect`` / ``validate-msg`` /
@@ -429,7 +426,7 @@ def convert(
     def _checkpoint_summary() -> None:
         """Persist a partial job_summary.json after each episode.
 
-        Lets the ``bagel ui`` backend poll real ``done/total`` progress
+        Lets an external watcher poll real ``done/total`` progress
         (n_success + n_failed vs the up-front bag count) while a conversion is
         still running. The final, post-finalize write in :func:`convert`
         overwrites this with the byte-equivalent authoritative summary, so this
@@ -2184,11 +2181,9 @@ def scaffold_config_yaml(
 ) -> str:
     """Build the scaffold ``robot_config.yaml`` text for a single bag.
 
-    Shared body of the ``scaffold`` verb and the ``bagel ui`` ``/api/scaffold``
-    endpoint: open the bag, measure per-topic fps, probe image shapes, run the
-    mapping heuristics (:func:`_scaffold_from_topics`), and render the YAML
-    (:func:`config.config_to_yaml`). Both callers pass the same defaults so the
-    generated YAML is byte-identical regardless of entry point.
+    Body of the ``scaffold`` verb: open the bag, measure per-topic fps, probe
+    image shapes, run the mapping heuristics (:func:`_scaffold_from_topics`),
+    and render the YAML (:func:`config.config_to_yaml`).
 
     Args:
         bag_path: A single bag directory (the caller has already run
@@ -3057,115 +3052,6 @@ def to_mcap(
 
     if failed:
         sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
-# ui
-# ---------------------------------------------------------------------------
-
-
-def _locate_static_dir() -> Path:
-    """Return the static asset dir to serve: built ``ui/dist`` else placeholder.
-
-    Prefers a built frontend bundle if present (``<repo>/ui/dist`` — built by the
-    TypeScript teammate), otherwise falls back to the packaged placeholder at
-    ``src/bagel/ui/static/`` so ``bagel ui`` is usable before the FE lands.
-
-    Returns:
-        The directory whose contents are served on ``/`` and ``/assets/*``.
-    """
-    package_static = Path(__file__).resolve().parent / "ui" / "static"
-    # ``ui/dist`` lives at the repo root (two levels up from src/bagel/cli.py).
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    dist = repo_root / "ui" / "dist"
-    if (dist / "index.html").is_file():
-        return dist
-    return package_static
-
-
-@main.command("ui")
-@click.option(
-    "--bags-root",
-    "bags_roots",
-    multiple=True,
-    required=True,
-    type=click.Path(exists=True, file_okay=False),
-    help="Allowed root directory for browsing/reading bags (repeatable).",
-)
-@click.option(
-    "--output-root",
-    "output_root",
-    required=True,
-    type=click.Path(file_okay=False),
-    help="Allowed root directory for conversion output + dataset reads.",
-)
-@click.option(
-    "--port",
-    default=8765,
-    type=int,
-    show_default=True,
-    help="TCP port to bind on 127.0.0.1.",
-)
-@click.option(
-    "--no-open",
-    is_flag=True,
-    default=False,
-    help="Do not open the tokenized URL in a web browser on launch.",
-)
-def ui(
-    bags_roots: tuple[str, ...],
-    output_root: str,
-    port: int,
-    no_open: bool,
-) -> None:
-    """Launch the localhost control UI (scaffold -> convert -> quality loop).
-
-    Binds ``127.0.0.1`` only (no ``--host``), mints a per-launch session token,
-    and serves the frontend bundle plus the JSON allow-list API. All filesystem
-    access is confined to the configured ``--bags-root`` / ``--output-root``
-    directories. Prints (and, unless ``--no-open``, opens) a tokenized URL.
-    """
-    import webbrowser
-
-    from bagel.ui.api import Api
-    from bagel.ui.jobs import JobRegistry
-    from bagel.ui.security import new_token, Root
-    from bagel.ui.server import make_server
-
-    roots: list[Root] = []
-    for i, br in enumerate(bags_roots):
-        roots.append(Root(id=i, label="bags", path=Path(br).resolve()))
-    out_path = Path(output_root).resolve()
-    out_path.mkdir(parents=True, exist_ok=True)
-    roots.append(Root(id=len(bags_roots), label="output", path=out_path))
-
-    token = new_token()
-    registry = JobRegistry()
-    api = Api(roots=roots, token=token, registry=registry)
-    static_dir = _locate_static_dir()
-
-    server = make_server(api, static_dir, port)
-    bound_port = server.server_address[1]
-    url = f"http://127.0.0.1:{bound_port}/?token={token}"
-
-    click.secho("bagel ui", fg="green", bold=True)
-    click.echo(f"  serving static : {static_dir}")
-    for r in roots:
-        click.echo(f"  root [{r.id}] {r.label:6s}: {r.path}")
-    click.echo("")
-    click.secho(f"  Open: {url}", fg="cyan", bold=True)
-    click.echo("  (Ctrl-C to stop)")
-
-    if not no_open:
-        webbrowser.open(url)
-
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        click.echo("\nShutting down...")
-    finally:
-        registry.shutdown()
-        server.server_close()
 
 
 # ---------------------------------------------------------------------------
