@@ -157,34 +157,53 @@ class Api:
         return [r for r in self.roots if r.label != "output"]
 
     def _confine_bags(self, bags: list[str]) -> list[Path]:
-        """Confine a list of absolute bag paths to the bags roots.
+        """Confine a list of bag paths to the bags roots.
 
-        The FE sends absolute paths (from ``browse``). We re-confine each by
-        computing its path relative to whichever bags-root contains it; anything
-        outside every bags root — including a path under the output root — is
-        rejected.
+        Each entry may be either an absolute path or a path relative to a
+        bags-root (the frontend sends root-relative paths from ``browse``).
+        Both forms are confined to the bags roots; anything outside every bags
+        root — including a path under the output root — is rejected. Relative
+        entries are resolved through :func:`resolve_in_roots`, so the
+        path-traversal guard still applies.
         """
         if not bags:
             raise ApiError(400, "No bags specified.")
         confined: list[Path] = []
         for bag in bags:
-            bag_path = Path(bag)
-            matched: Path | None = None
+            matched = self._confine_one_bag(bag)
+            if matched is None:
+                raise ApiError(403, f"Bag path outside configured roots: {bag!r}")
+            confined.append(matched)
+        return confined
+
+    def _confine_one_bag(self, bag: str) -> Path | None:
+        """Resolve a single bag (absolute or root-relative) within a bags root.
+
+        Returns the confined path, or ``None`` if it falls outside every bags
+        root.
+        """
+        bag_path = Path(bag)
+        if bag_path.is_absolute():
+            resolved = bag_path.resolve()
             for root in self._bags_roots():
                 root_resolved = root.path.resolve()
-                resolved = bag_path.resolve()
                 if resolved == root_resolved or resolved.is_relative_to(root_resolved):
                     rel = (
                         ""
                         if resolved == root_resolved
                         else str(resolved.relative_to(root_resolved))
                     )
-                    matched = self._resolve(root.id, rel)
-                    break
-            if matched is None:
-                raise ApiError(403, f"Bag path outside configured roots: {bag!r}")
-            confined.append(matched)
-        return confined
+                    return self._resolve(root.id, rel)
+            return None
+        # Root-relative path: try each bags root via the confined resolver.
+        for root in self._bags_roots():
+            try:
+                candidate = resolve_in_roots(self.roots, root.id, bag)
+            except PathSecurityError:
+                continue
+            if candidate.exists():
+                return candidate
+        return None
 
     def _bags_parent(self, bag_paths: list[Path]) -> Path:
         """Return the common parent dir to pass as ``--bags`` to the CLI.

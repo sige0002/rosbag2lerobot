@@ -186,6 +186,43 @@ def test_bag_under_output_root_rejected(server_ctx) -> None:
     assert data["error"] is True
 
 
+def test_confine_bags_relative_and_absolute(tmp_path: Path) -> None:
+    """_confine_bags accepts root-relative paths (what the FE sends from browse)
+    and absolute paths under a bags root, and rejects output-root / traversal."""
+    from bagel.ui.api import ApiError
+
+    bags_root = tmp_path / "bags"
+    out_root = tmp_path / "out"
+    bag = bags_root / "group" / "ep0"
+    bag.mkdir(parents=True)
+    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information: {}\n")
+    out_root.mkdir()
+    api = Api(
+        roots=[
+            Root(id=0, label="bags", path=bags_root),
+            Root(id=1, label="output", path=out_root),
+        ],
+        token=TOKEN,
+        registry=JobRegistry(),
+    )
+
+    # Root-relative path (the exact form the frontend sends) resolves correctly.
+    rel = api._confine_bags(["group/ep0"])
+    assert [p.resolve() for p in rel] == [bag.resolve()]
+    # Absolute path under the bags root also works.
+    ab = api._confine_bags([str(bag)])
+    assert [p.resolve() for p in ab] == [bag.resolve()]
+    # A path under the output root is not a valid bag.
+    with pytest.raises(ApiError):
+        api._confine_bags([str(out_root / "ds")])
+    # Traversal is rejected.
+    with pytest.raises(ApiError):
+        api._confine_bags(["../escape"])
+    # Empty selection is a 400.
+    with pytest.raises(ApiError):
+        api._confine_bags([])
+
+
 def test_static_index_unauthenticated(server_ctx) -> None:
     conn, _roots = server_ctx
     status, body, ctype = _get(conn, "/", token=None)
