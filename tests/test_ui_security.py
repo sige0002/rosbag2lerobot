@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from bagel.ui.security import (
+    host_is_loopback,
     new_token,
     PathSecurityError,
     resolve_in_roots,
@@ -112,3 +113,41 @@ def test_token_matches() -> None:
     assert not token_matches(tok, tok + "x")
     assert not token_matches(tok, None)
     assert not token_matches(tok, "")
+
+
+# ---------------------------------------------------------------------------
+# Host-header allow-list (DNS-rebinding defence)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1",
+        "127.0.0.1:8000",
+        "localhost",
+        "localhost:8000",
+        "LocalHost",  # case-insensitive
+        "[::1]",
+        "[::1]:8000",
+        None,  # absent Host (HTTP/1.0) is allowed: cannot carry an attacker host
+        "",  # empty Host treated like absent
+    ],
+)
+def test_host_is_loopback_allowed(host: str | None) -> None:
+    assert host_is_loopback(host, 8000) is True
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "evil.com",
+        "evil.com:8000",
+        "example.com",
+        "127.0.0.1.evil.com",  # loopback as a subdomain label, not the host
+        "0.0.0.0",
+        "192.168.1.10",
+    ],
+)
+def test_host_is_loopback_rejected(host: str) -> None:
+    assert host_is_loopback(host, 8000) is False

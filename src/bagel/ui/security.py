@@ -103,6 +103,43 @@ def resolve_in_roots(roots: list[Root], root_id: int, subpath: str) -> Path:
     raise PathSecurityError(f"Unknown root_id: {root_id}")
 
 
+def host_is_loopback(host_header: str | None, port: int) -> bool:
+    """Return ``True`` iff a ``Host`` header points at a loopback name.
+
+    DNS-rebinding defence for the localhost-only UI server: a remote page that
+    resolves an attacker-controlled hostname to ``127.0.0.1`` would still send
+    that hostname in the ``Host`` header, so we accept only loopback names.
+
+    The host-part is matched (case-insensitively) against ``127.0.0.1``,
+    ``localhost`` and ``::1`` (the latter written ``[::1]`` in a ``Host``
+    header). An optional ``:PORT`` suffix is tolerated and ignored — we do not
+    pin the port, since the server already binds ``127.0.0.1`` exclusively.
+
+    A missing or empty ``Host`` is allowed: HTTP/1.0 clients (and some local
+    tools) omit it, and an absent header cannot carry an attacker's hostname.
+
+    Args:
+        host_header: The raw ``Host`` header value, or ``None`` when absent.
+        port: The port the server is bound to. Accepted for symmetry with the
+            caller; the value is not enforced (see above).
+
+    Returns:
+        ``True`` if the request may proceed, ``False`` to reject as 403.
+    """
+    if not host_header:
+        return True
+    host = host_header.strip()
+    # Strip a trailing ``:PORT`` (but keep the brackets of an IPv6 literal).
+    if host.startswith("["):
+        # ``[::1]`` or ``[::1]:PORT`` -> ``[::1]``.
+        end = host.find("]")
+        if end != -1:
+            host = host[: end + 1]
+    elif ":" in host:
+        host = host.rsplit(":", 1)[0]
+    return host.lower() in ("127.0.0.1", "localhost", "[::1]")
+
+
 def new_token() -> str:
     """Return a fresh URL-safe session token (256 bits of entropy)."""
     return secrets.token_urlsafe(32)

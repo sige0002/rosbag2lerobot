@@ -125,9 +125,16 @@ def server_ctx(tmp_path: Path):
         thread.join(timeout=5)
 
 
-def _get(conn_factory, path: str, token: str | None = TOKEN) -> tuple[int, bytes, str]:
+def _get(
+    conn_factory,
+    path: str,
+    token: str | None = TOKEN,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[int, bytes, str]:
     c = conn_factory()
     headers = {"X-Bagel-Token": token} if token is not None else {}
+    if extra_headers:
+        headers.update(extra_headers)
     c.request("GET", path, headers=headers)
     resp = c.getresponse()
     body = resp.read()
@@ -137,12 +144,18 @@ def _get(conn_factory, path: str, token: str | None = TOKEN) -> tuple[int, bytes
 
 
 def _post(
-    conn_factory, path: str, payload: dict[str, Any], token: str | None = TOKEN
+    conn_factory,
+    path: str,
+    payload: dict[str, Any],
+    token: str | None = TOKEN,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     c = conn_factory()
     headers = {"Content-Type": "application/json"}
     if token is not None:
         headers["X-Bagel-Token"] = token
+    if extra_headers:
+        headers.update(extra_headers)
     c.request("POST", path, body=json.dumps(payload), headers=headers)
     resp = c.getresponse()
     data = json.loads(resp.read() or b"{}")
@@ -229,6 +242,66 @@ def test_static_index_unauthenticated(server_ctx) -> None:
     assert status == 200
     assert "text/html" in ctype
     assert b"bagel ui" in body
+
+
+# ---------------------------------------------------------------------------
+# Host-header allow-list (DNS-rebinding defence)
+# ---------------------------------------------------------------------------
+
+
+def test_host_header_evil_rejected_api(server_ctx) -> None:
+    # A non-loopback Host (the hallmark of a DNS-rebinding request) is rejected
+    # with 403 before auth/routing, even with a valid token.
+    conn, _roots = server_ctx
+    status, body, _ctype = _get(conn, "/api/config", extra_headers={"Host": "evil.com"})
+    assert status == 403
+    assert json.loads(body)["detail"] == "Host not allowed."
+
+
+def test_host_header_evil_rejected_static(server_ctx) -> None:
+    # The Host check guards static routes too (no auth there otherwise).
+    conn, _roots = server_ctx
+    status, body, _ctype = _get(
+        conn, "/", token=None, extra_headers={"Host": "evil.com"}
+    )
+    assert status == 403
+    assert json.loads(body)["detail"] == "Host not allowed."
+
+
+def test_host_header_loopback_ok(server_ctx) -> None:
+    # The default http.client Host is 127.0.0.1:<port> -> allowed; a normal
+    # request still works.
+    conn, _roots = server_ctx
+    status, body, _ctype = _get(conn, "/api/config")
+    assert status == 200
+    assert "command" in json.loads(body)
+
+
+# ---------------------------------------------------------------------------
+# 500 handler does not leak internal details/paths
+# ---------------------------------------------------------------------------
+
+
+def test_unexpected_exception_returns_generic_500(server_ctx, monkeypatch) -> None:
+    # An unexpected (non-ApiError) exception must be logged server-side and
+    # surface to the client as a generic message — never the exception text,
+    # which could embed a filesystem path or other internal detail.
+    import bagel.ui.api as api_mod
+
+    conn, _roots = server_ctx
+    secret_path = "/private/secret/leak/path"
+
+    def boom(self, body: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError(secret_path)
+
+    monkeypatch.setattr(api_mod.Api, "validate_dataset", boom)
+
+    status, data = _post(conn, "/api/validate-dataset", {"dataset": "ds"})
+    assert status == 500
+    assert data["error"] is True
+    assert data["detail"] == "Internal server error."
+    # The internal path must not leak in the response body.
+    assert secret_path not in json.dumps(data)
 
 
 # ---------------------------------------------------------------------------

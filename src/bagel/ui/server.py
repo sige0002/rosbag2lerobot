@@ -17,15 +17,20 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from bagel.ui.api import Api, ApiError
-from bagel.ui.security import token_matches
+from bagel.ui.security import host_is_loopback, token_matches
 
 logger = logging.getLogger(__name__)
+
+# Redacts a ``token=<value>`` query param in request lines before logging, so
+# the session token never lands in logs (e.g. ``/api/preview?token=...``).
+_TOKEN_RE = re.compile(r"(token=)[^&\s]*")
 
 # Static MIME types we serve from the frontend bundle. Anything else falls back
 # to ``application/octet-stream``.
@@ -69,9 +74,26 @@ def _make_handler(api: Api, static_dir: Path) -> type[BaseHTTPRequestHandler]:
 
         server_version = "bagel-ui"
 
-        # Route API logging through the module logger, not stderr.
+        # Route API logging through the module logger, not stderr. The request
+        # line can carry the session token (``?token=``); redact it first.
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A002
-            logger.debug("%s - %s", self.address_string(), fmt % args)
+            line = _TOKEN_RE.sub(r"\1***", fmt % args)
+            logger.debug("%s - %s", self.address_string(), line)
+
+        # -- host check (DNS-rebinding defence) --------------------------
+
+        def _host_allowed(self) -> bool:
+            """Reject non-loopback ``Host`` headers (sends 403 itself).
+
+            Called before auth/routing for every route so a remote page that
+            rebinds a hostname to ``127.0.0.1`` cannot reach the API.
+            """
+            if host_is_loopback(
+                self.headers.get("Host"), self.server.server_address[1]
+            ):
+                return True
+            self._send_error_json(403, "Host not allowed.")
+            return False
 
         # -- auth --------------------------------------------------------
 
@@ -123,6 +145,8 @@ def _make_handler(api: Api, static_dir: Path) -> type[BaseHTTPRequestHandler]:
         # -- GET ---------------------------------------------------------
 
         def do_GET(self) -> None:  # noqa: N802 - http.server contract
+            if not self._host_allowed():
+                return
             parsed = urlparse(self.path)
             path = parsed.path
             query = parse_qs(parsed.query)
@@ -152,14 +176,19 @@ def _make_handler(api: Api, static_dir: Path) -> type[BaseHTTPRequestHandler]:
                 else:
                     self._send_error_json(404, f"No such endpoint: {path}")
             except ApiError as exc:
+                # ApiError.detail is an intentional, sanitized message.
                 self._send_error_json(exc.status, exc.detail)
-            except Exception as exc:  # noqa: BLE001 - surface as 500, never crash thread
+            except Exception:  # noqa: BLE001 - surface as 500, never crash thread
+                # Log the full traceback server-side; return a generic body so
+                # internal details/paths never reach the client.
                 logger.exception("Unhandled error on GET %s", path)
-                self._send_error_json(500, str(exc))
+                self._send_error_json(500, "Internal server error.")
 
         # -- POST --------------------------------------------------------
 
         def do_POST(self) -> None:  # noqa: N802 - http.server contract
+            if not self._host_allowed():
+                return
             parsed = urlparse(self.path)
             path = parsed.path
             query = parse_qs(parsed.query)
@@ -187,10 +216,13 @@ def _make_handler(api: Api, static_dir: Path) -> type[BaseHTTPRequestHandler]:
                     return
                 self._send_json(200, handler(body))
             except ApiError as exc:
+                # ApiError.detail is an intentional, sanitized message.
                 self._send_error_json(exc.status, exc.detail)
-            except Exception as exc:  # noqa: BLE001 - surface as 500, never crash thread
+            except Exception:  # noqa: BLE001 - surface as 500, never crash thread
+                # Log the full traceback server-side; return a generic body so
+                # internal details/paths never reach the client.
                 logger.exception("Unhandled error on POST %s", path)
-                self._send_error_json(500, str(exc))
+                self._send_error_json(500, "Internal server error.")
 
         # -- static ------------------------------------------------------
 
