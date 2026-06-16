@@ -30,6 +30,7 @@ from typing import Any
 import numpy as np
 
 from bagel.decoders import register_decoder
+from bagel.transforms import quat_xyzw_to_euler
 
 logger = logging.getLogger(__name__)
 
@@ -129,14 +130,51 @@ def _parse_array_selector(selector_str: str) -> tuple[str, int | None]:
         raise ValueError(f"Invalid array index in selector: {selector_str!r}") from e
 
 
+def _euler_convention(selector_str: str) -> tuple[str, str] | None:
+    """Detect a trailing ``euler_<conv>`` token in a selector.
+
+    Args:
+        selector_str: A single selector entry, e.g. ``"orientation.euler_xyz"``,
+            ``"pose.orientation.euler_zyx"``, or just ``"euler_xyz"``.
+
+    Returns:
+        ``(prefix, convention)`` when the last dotted segment is ``euler_<conv>``
+        — ``prefix`` is the dotted path to the quaternion struct (``""`` when the
+        token stands alone) and ``convention`` is ``"xyz"`` / ``"zyx"``.
+        ``None`` for any non-euler selector.
+    """
+    last = selector_str.rsplit(".", 1)[-1]
+    if not last.startswith("euler_"):
+        return None
+    convention = last[len("euler_") :]
+    prefix = selector_str[: len(selector_str) - len(last)].rstrip(".")
+    return prefix, convention
+
+
 def _extract_by_selector(msg: Any, selector_str: str) -> list[float]:
     """Resolve one selector entry against *msg*, returning a flat list of floats.
 
     Handles, in order:
+      * trailing ``euler_<conv>`` -- e.g. ``"orientation.euler_xyz"`` or
+        ``"pose.orientation.euler_zyx"``: resolve the prefix to a quaternion
+        struct (``.x/.y/.z/.w``) and convert to ``[roll, pitch, yaw]`` (3 floats).
       * ``"field[idx]"`` -- single element via :func:`_parse_array_selector`.
       * ``"a.b.c"``      -- nested attribute via :func:`_get_nested_attr`.
       * ``"field"``      -- full-array iteration, or single-value wrap for scalars.
     """
+    euler = _euler_convention(selector_str)
+    if euler is not None:
+        prefix, convention = euler
+        quat = _get_nested_attr(msg, prefix) if prefix else msg
+        roll, pitch, yaw = quat_xyzw_to_euler(
+            float(quat.x),
+            float(quat.y),
+            float(quat.z),
+            float(quat.w),
+            convention=convention,
+        )
+        return [roll, pitch, yaw]
+
     if "[" in selector_str:
         field_name, index = _parse_array_selector(selector_str)
         field_data = getattr(msg, field_name, None)
@@ -407,10 +445,10 @@ def decode_odometry(
             ],
             config,
         )
-    return _finalize(
-        [float(_get_nested_attr(msg, sel)) for sel in selector],
-        config,
-    )
+    results: list[float] = []
+    for sel in selector:
+        results.extend(_extract_by_selector(msg, sel))
+    return _finalize(results, config)
 
 
 # ---------------------------------------------------------------------------
@@ -441,10 +479,10 @@ def decode_imu(
             ],
             config,
         )
-    return _finalize(
-        [float(_get_nested_attr(msg, sel)) for sel in selector],
-        config,
-    )
+    results: list[float] = []
+    for sel in selector:
+        results.extend(_extract_by_selector(msg, sel))
+    return _finalize(results, config)
 
 
 # ---------------------------------------------------------------------------
@@ -551,10 +589,10 @@ def decode_pose_stamped(
         p = msg.pose.position
         o = msg.pose.orientation
         return _finalize([p.x, p.y, p.z, o.x, o.y, o.z, o.w], config)
-    return _finalize(
-        [float(_get_nested_attr(msg, sel)) for sel in selector],
-        config,
-    )
+    results: list[float] = []
+    for sel in selector:
+        results.extend(_extract_by_selector(msg, sel))
+    return _finalize(results, config)
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +611,7 @@ def decode_pose(
         p = msg.position
         o = msg.orientation
         return _finalize([p.x, p.y, p.z, o.x, o.y, o.z, o.w], config)
-    return _finalize(
-        [float(_get_nested_attr(msg, sel)) for sel in selector],
-        config,
-    )
+    results: list[float] = []
+    for sel in selector:
+        results.extend(_extract_by_selector(msg, sel))
+    return _finalize(results, config)
