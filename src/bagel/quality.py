@@ -603,6 +603,8 @@ def compute_quality_report(
     range_tol: float = 0.0,
     sample_video: bool = True,
     score_threshold: float = 0.95,
+    info: dict[str, Any] | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> QualityReport:
     """Compute a :class:`QualityReport` for a generated LeRobot v3.0 dataset.
 
@@ -622,14 +624,21 @@ def compute_quality_report(
             frames. When ``False``, freeze metrics are skipped (0) but the
             cheap ffprobe-based reconciliation still runs.
         score_threshold: Minimum score for an ``OK`` verdict.
+        info: Pre-loaded ``meta/info.json`` contents. When ``None`` (default),
+            it is read from disk; pass it to avoid re-reading when the caller
+            already has it (e.g. :func:`bagel.preview.generate_preview`).
+        stats: Pre-loaded ``meta/stats.json`` contents. When ``None``
+            (default), it is read from disk (see ``info``).
 
     Returns:
         A populated :class:`QualityReport` with ``verdict`` / ``exit_code``
         already resolved.
     """
     dataset_dir = Path(dataset_dir)
-    info = _read_info(dataset_dir)
-    stats = _load_stats(dataset_dir)
+    if info is None:
+        info = _read_info(dataset_dir)
+    if stats is None:
+        stats = _load_stats(dataset_dir)
 
     weights = {
         "w_null": _DEFAULT_W_NULL,

@@ -371,7 +371,9 @@ def generate_preview(
     dataset_dir = Path(dataset_dir)
     info = _read_info(dataset_dir)
     stats = _load_stats(dataset_dir)
-    quality = compute_quality_report(dataset_dir, sample_video=sample_video).to_dict()
+    quality = compute_quality_report(
+        dataset_dir, sample_video=sample_video, info=info, stats=stats
+    ).to_dict()
 
     video_keys = video_feature_keys(info)
     raw_frames = _grab_sample_frames(dataset_dir, video_keys, n_frames)

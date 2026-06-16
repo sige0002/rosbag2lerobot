@@ -292,6 +292,20 @@ def test_compute_quality_report_clean(tiny_dataset: Path) -> None:
         assert v.mp4_frames == v.expected_frames
 
 
+def test_compute_quality_report_preloaded_info_stats_equivalent(
+    tiny_dataset: Path,
+) -> None:
+    # Passing already-loaded info/stats must yield an identical report dict to
+    # the default path that reads both JSON files from disk.
+    info = json.loads((tiny_dataset / "meta" / "info.json").read_text())
+    stats = json.loads((tiny_dataset / "meta" / "stats.json").read_text())
+
+    from_disk = compute_quality_report(tiny_dataset).to_dict()
+    preloaded = compute_quality_report(tiny_dataset, info=info, stats=stats).to_dict()
+
+    assert preloaded == from_disk
+
+
 def test_cli_quality_report_writes_parseable_json(
     tiny_dataset: Path, tmp_path: Path
 ) -> None:
