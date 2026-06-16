@@ -17,6 +17,7 @@ What is asserted:
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,8 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 BAGDATA_DIR = PROJECT_ROOT / "bagdata"
 
 SAMPLE_001 = BAGDATA_DIR / "bag" / "sample_001"
+REAL_BAGS = BAGDATA_DIR / "airoa-moma-mcap"
+HSR_CONFIG = PROJECT_ROOT / "configs" / "hsr.yaml"
 
 
 def _first_dataset() -> Path | None:
@@ -98,6 +101,43 @@ def test_quality_report_json() -> None:
     for key in ("dataset", "features", "videos", "score", "verdict"):
         assert key in parsed
     assert parsed["verdict"] in {"OK", "FAIL"}
+
+
+@pytest.mark.integration
+def test_convert_json_is_indented(tmp_path: Path) -> None:
+    """`convert --json` emits an indented JSON object (matches the report verbs).
+
+    The emitted summary must parse as one JSON object and be pretty-printed
+    (``indent=2``), i.e. span multiple lines, consistent with ``_emit_report``.
+    """
+    if not REAL_BAGS.is_dir():
+        pytest.skip(f"real bags not present: {REAL_BAGS}")
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+
+    out = tmp_path / "ds"
+    result = CliRunner().invoke(
+        main,
+        [
+            "convert",
+            "--config",
+            str(HSR_CONFIG),
+            "--bags",
+            str(REAL_BAGS),
+            "--output",
+            str(out),
+            "--json",
+            "--max-episodes",
+            "1",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # --quiet/--json suppress chatter, so the whole stdout is the JSON object.
+    payload = json.loads(result.output)
+    assert payload["n_success"] == 1
+    assert "total_frames" in payload
+    # Indented output spans multiple lines (one key per line under indent=2).
+    assert "\n  " in result.output
 
 
 @pytest.mark.integration

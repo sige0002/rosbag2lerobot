@@ -542,7 +542,7 @@ def convert(
         json.dump(summary_dict, fh, indent=2)
 
     if json_summary:
-        click.echo(json.dumps(summary_dict))
+        click.echo(json.dumps(summary_dict, indent=2))
         return
 
     logger.info("Done.")
@@ -1417,6 +1417,63 @@ def _inspect_legacy(bags_path: str) -> None:
         click.echo("")
 
 
+def _collect_topic_fps_reports(
+    reader: BagReader,
+    topics: list[str],
+    gap_threshold_ms: float,
+    head_n: int,
+) -> list[dict[str, Any]]:
+    """Collect per-topic FPS reports for *topics* in a single timestamp pass.
+
+    Reads raw timestamps (no CDR deserialize) for every requested topic and
+    runs :func:`compute_topic_fps_report` on each. Shared by
+    :func:`_run_fps_stats` (full per-topic report) and
+    :func:`_measure_topic_fps` (which reads back ``report['fps']['mean']``).
+
+    Args:
+        reader: An open :class:`BagReader`.
+        topics: Topics to measure (in the order they are returned).
+        gap_threshold_ms: Inter-arrival gap threshold passed through to
+            :func:`compute_topic_fps_report`.
+        head_n: Number of head sample intervals to include in each report.
+
+    Returns:
+        One report dict per topic, aligned with *topics* by index. The
+        topic name is *not* set on the report (callers add ``"name"`` when
+        they need it).
+    """
+    import numpy as np
+
+    from bagel.diagnostics import compute_topic_fps_report
+
+    start_ns, end_ns = reader.get_time_range()
+    topics_info = reader.get_topics_info()
+
+    # Collect timestamps per topic in a single pass.
+    ts_by_topic: dict[str, list[int]] = {t: [] for t in topics}
+    for topic, ts_ns, _msg in _iter_raw_timestamps(reader, topics):
+        if topic in ts_by_topic:
+            ts_by_topic[topic].append(ts_ns)
+
+    reports: list[dict[str, Any]] = []
+    for topic in topics:
+        info = topics_info[topic]
+        ts_array = np.asarray(ts_by_topic[topic], dtype=np.int64)
+        ts_array.sort()
+        reports.append(
+            compute_topic_fps_report(
+                ts_ns=ts_array,
+                bag_start_ns=start_ns,
+                bag_end_ns=end_ns,
+                msg_type=info.msg_type,
+                msg_count=info.count,
+                gap_threshold_ms=gap_threshold_ms,
+                head_n=head_n,
+            )
+        )
+    return reports
+
+
 def _run_fps_stats(
     bag_path: Path,
     cfg: Optional[RobotConfig],
@@ -1425,10 +1482,6 @@ def _run_fps_stats(
     head_n: int,
 ) -> dict[str, Any]:
     """Build the FPS report section for one bag."""
-    import numpy as np
-
-    from bagel.diagnostics import compute_topic_fps_report
-
     # A minimal stub config is enough for BagReader when the user did
     # not supply --config; we only need topic metadata / iter_messages.
     stub_cfg = cfg if cfg is not None else _build_stub_config(bag_path)
@@ -1448,25 +1501,10 @@ def _run_fps_stats(
                 else list(topics_info.keys())
             )
 
-            # Collect timestamps per topic in a single pass.
-            ts_by_topic: dict[str, list[int]] = {t: [] for t in wanted_topics}
-            for topic, ts_ns, _msg in _iter_raw_timestamps(reader, wanted_topics):
-                if topic in ts_by_topic:
-                    ts_by_topic[topic].append(ts_ns)
-
-            for topic in wanted_topics:
-                info = topics_info[topic]
-                ts_array = np.asarray(ts_by_topic[topic], dtype=np.int64)
-                ts_array.sort()
-                report = compute_topic_fps_report(
-                    ts_ns=ts_array,
-                    bag_start_ns=start_ns,
-                    bag_end_ns=end_ns,
-                    msg_type=info.msg_type,
-                    msg_count=info.count,
-                    gap_threshold_ms=gap_threshold_ms,
-                    head_n=head_n,
-                )
+            reports = _collect_topic_fps_reports(
+                reader, wanted_topics, gap_threshold_ms, head_n
+            )
+            for topic, report in zip(wanted_topics, reports):
                 report["name"] = topic
                 entry["topics"].append(report)
     except Exception as exc:
@@ -1902,32 +1940,11 @@ def _measure_topic_fps(reader: BagReader, topics: list[str]) -> dict[str, float]
     Returns:
         ``{topic: mean_fps}`` for every topic with a computable mean.
     """
-    import numpy as np
-
-    from bagel.diagnostics import compute_topic_fps_report
-
-    start_ns, end_ns = reader.get_time_range()
-    topics_info = reader.get_topics_info()
-
-    ts_by_topic: dict[str, list[int]] = {t: [] for t in topics}
-    for topic, ts_ns, _msg in _iter_raw_timestamps(reader, topics):
-        if topic in ts_by_topic:
-            ts_by_topic[topic].append(ts_ns)
-
+    reports = _collect_topic_fps_reports(
+        reader, topics, gap_threshold_ms=200.0, head_n=0
+    )
     fps_by_topic: dict[str, float] = {}
-    for topic in topics:
-        info = topics_info[topic]
-        ts_array = np.asarray(ts_by_topic[topic], dtype=np.int64)
-        ts_array.sort()
-        report = compute_topic_fps_report(
-            ts_ns=ts_array,
-            bag_start_ns=start_ns,
-            bag_end_ns=end_ns,
-            msg_type=info.msg_type,
-            msg_count=info.count,
-            gap_threshold_ms=200.0,
-            head_n=0,
-        )
+    for topic, report in zip(topics, reports):
         mean = report["fps"]["mean"]
         if mean is not None:
             fps_by_topic[topic] = float(mean)
@@ -2156,6 +2173,88 @@ def _scaffold_from_topics(
     return cfg, obs_annotations, obs_candidates, act_candidates
 
 
+def scaffold_config_yaml(
+    bag_path: Path,
+    *,
+    robot_type: str,
+    task: str,
+    fps: Optional[int],
+    min_count: int,
+    samples: int,
+) -> str:
+    """Build the scaffold ``robot_config.yaml`` text for a single bag.
+
+    Shared body of the ``scaffold`` verb and the ``bagel ui`` ``/api/scaffold``
+    endpoint: open the bag, measure per-topic fps, probe image shapes, run the
+    mapping heuristics (:func:`_scaffold_from_topics`), and render the YAML
+    (:func:`config.config_to_yaml`). Both callers pass the same defaults so the
+    generated YAML is byte-identical regardless of entry point.
+
+    Args:
+        bag_path: A single bag directory (the caller has already run
+            ``discover_bags`` and selected the first bag).
+        robot_type: ``robot_type`` value for the generated config.
+        task: ``task`` description for the generated config.
+        fps: Explicit target fps, or ``None`` to pick it heuristically.
+        min_count: Drop topics with fewer than this many messages.
+        samples: Image frames to decode per topic for shape detection.
+
+    Returns:
+        The rendered YAML text.
+    """
+    from bagel.decoders import get_registered_types
+    from bagel.diagnostics import detect_image_shape
+
+    registered = set(get_registered_types())
+
+    stub_cfg = _build_stub_config(bag_path)
+    with BagReader(bag_path, stub_cfg) as reader:
+        topics_info = reader.get_topics_info()
+
+        # Measure fps for every kept topic in one cheap pass.
+        measurable = [
+            t
+            for t, info in topics_info.items()
+            if info.count >= min_count
+            and info.msg_type not in _INFRA_MSG_TYPES
+            and t not in _INFRA_TOPICS
+        ]
+        fps_by_topic = _measure_topic_fps(reader, measurable)
+
+        # Detect image shapes (consensus over `samples` frames).
+        image_shapes: dict[str, Optional[tuple[int, int, int]]] = {}
+        for topic, info in topics_info.items():
+            if info.msg_type in _IMAGE_MSG_TYPES and info.count >= min_count:
+                fm = FeatureMapping(
+                    key="probe",
+                    topic=topic,
+                    msg_type=info.msg_type,
+                    dtype="image",
+                )
+                image_shapes[topic] = detect_image_shape(reader, fm, samples)
+
+    cfg, obs_annotations, obs_candidates, act_candidates = _scaffold_from_topics(
+        topics_info=topics_info,
+        fps_by_topic=fps_by_topic,
+        image_shapes=image_shapes,
+        registered=registered,
+        robot_type=robot_type,
+        task=task,
+        fps_override=fps,
+        min_count=min_count,
+        bag_name=bag_path.name,
+    )
+    header = obs_annotations.pop("__header__", [])
+
+    return config_to_yaml(
+        cfg,
+        header_lines=header,
+        obs_annotations=obs_annotations,
+        obs_candidates=obs_candidates,
+        act_candidates=act_candidates,
+    )
+
+
 @main.command("scaffold")
 @click.option(
     "--bags",
@@ -2228,9 +2327,6 @@ def scaffold(
     writing; unless ``--no-validate`` is set, ``validate-config`` is then run
     against the bag to enforce the round-trip / mapping guarantee.
     """
-    from bagel.decoders import get_registered_types
-    from bagel.diagnostics import detect_image_shape
-
     bag_paths = discover_bags(bags_path)
     bag_path = bag_paths[0]
     if len(bag_paths) > 1:
@@ -2240,53 +2336,13 @@ def scaffold(
             bag_path,
         )
 
-    registered = set(get_registered_types())
-
-    stub_cfg = _build_stub_config(bag_path)
-    with BagReader(bag_path, stub_cfg) as reader:
-        topics_info = reader.get_topics_info()
-
-        # Measure fps for every kept topic in one cheap pass.
-        measurable = [
-            t
-            for t, info in topics_info.items()
-            if info.count >= min_count
-            and info.msg_type not in _INFRA_MSG_TYPES
-            and t not in _INFRA_TOPICS
-        ]
-        fps_by_topic = _measure_topic_fps(reader, measurable)
-
-        # Detect image shapes (consensus over `samples` frames).
-        image_shapes: dict[str, Optional[tuple[int, int, int]]] = {}
-        for topic, info in topics_info.items():
-            if info.msg_type in _IMAGE_MSG_TYPES and info.count >= min_count:
-                fm = FeatureMapping(
-                    key="probe",
-                    topic=topic,
-                    msg_type=info.msg_type,
-                    dtype="image",
-                )
-                image_shapes[topic] = detect_image_shape(reader, fm, samples)
-
-    cfg, obs_annotations, obs_candidates, act_candidates = _scaffold_from_topics(
-        topics_info=topics_info,
-        fps_by_topic=fps_by_topic,
-        image_shapes=image_shapes,
-        registered=registered,
+    yaml_text = scaffold_config_yaml(
+        bag_path,
         robot_type=robot_type,
         task=task,
-        fps_override=fps,
+        fps=fps,
         min_count=min_count,
-        bag_name=bag_path.name,
-    )
-    header = obs_annotations.pop("__header__", [])
-
-    yaml_text = config_to_yaml(
-        cfg,
-        header_lines=header,
-        obs_annotations=obs_annotations,
-        obs_candidates=obs_candidates,
-        act_candidates=act_candidates,
+        samples=samples,
     )
 
     if output_path is None:

@@ -248,9 +248,9 @@ class Api:
     def scaffold(self, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/scaffold`` -- generate a starter config (stdout, no write).
 
-        Reuses the ``scaffold`` verb's heuristics
-        (:func:`bagel.cli._scaffold_from_topics` + :func:`config.config_to_yaml`)
-        so the YAML is byte-identical to ``bagel scaffold`` printing to stdout.
+        Delegates to :func:`bagel.cli.scaffold_config_yaml` (the shared body of
+        the ``scaffold`` verb) with the same defaults, so the YAML is
+        byte-identical to ``bagel scaffold`` printing to stdout.
         """
         bags = [str(b) for b in body.get("bags", [])]
         bag_paths = self._confine_bags(bags)
@@ -260,18 +260,8 @@ class Api:
         fps = body.get("fps")
         fps_override = int(fps) if fps is not None else None
 
-        from bagel.cli import (
-            _build_stub_config,
-            _IMAGE_MSG_TYPES,
-            _INFRA_MSG_TYPES,
-            _INFRA_TOPICS,
-            _measure_topic_fps,
-            _scaffold_from_topics,
-        )
-        from bagel.config import config_to_yaml, FeatureMapping
-        from bagel.decoders import get_registered_types
-        from bagel.diagnostics import detect_image_shape
-        from bagel.reader import BagReader, discover_bags
+        from bagel.cli import scaffold_config_yaml
+        from bagel.reader import discover_bags
 
         try:
             discovered = discover_bags(bags_arg)
@@ -279,49 +269,14 @@ class Api:
             raise ApiError(400, str(exc)) from exc
         bag_path = discovered[0]
 
-        registered = set(get_registered_types())
-        min_count = 1
-        samples = 3
-        stub_cfg = _build_stub_config(bag_path)
-        with BagReader(bag_path, stub_cfg) as reader:
-            topics_info = reader.get_topics_info()
-            measurable = [
-                t
-                for t, info in topics_info.items()
-                if info.count >= min_count
-                and info.msg_type not in _INFRA_MSG_TYPES
-                and t not in _INFRA_TOPICS
-            ]
-            fps_by_topic = _measure_topic_fps(reader, measurable)
-            image_shapes: dict[str, Any] = {}
-            for topic, info in topics_info.items():
-                if info.msg_type in _IMAGE_MSG_TYPES and info.count >= min_count:
-                    fm = FeatureMapping(
-                        key="probe",
-                        topic=topic,
-                        msg_type=info.msg_type,
-                        dtype="image",
-                    )
-                    image_shapes[topic] = detect_image_shape(reader, fm, samples)
-
-        cfg, obs_annotations, obs_candidates, act_candidates = _scaffold_from_topics(
-            topics_info=topics_info,
-            fps_by_topic=fps_by_topic,
-            image_shapes=image_shapes,
-            registered=registered,
+        # Same defaults as ``bagel scaffold`` so the YAML is byte-identical.
+        yaml_text = scaffold_config_yaml(
+            bag_path,
             robot_type=robot_type,
             task=task,
-            fps_override=fps_override,
-            min_count=min_count,
-            bag_name=bag_path.name,
-        )
-        header = obs_annotations.pop("__header__", [])
-        yaml_text = config_to_yaml(
-            cfg,
-            header_lines=header,
-            obs_annotations=obs_annotations,
-            obs_candidates=obs_candidates,
-            act_candidates=act_candidates,
+            fps=fps_override,
+            min_count=1,
+            samples=3,
         )
 
         parts = ["bagel scaffold", f"--bags {_quote(str(bags_arg))}"]
