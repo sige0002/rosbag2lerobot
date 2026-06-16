@@ -83,6 +83,109 @@ bagel convert \
 bagel validate-msg --msg msgs/my_robot/MyType.msg
 ```
 
+### 6. Scaffold a config for an unknown robot
+
+```bash
+bagel scaffold --bags /path/to/all_bags/ -o configs/my_robot.yaml
+```
+
+### 7. Validate and score a generated dataset
+
+```bash
+bagel validate-dataset --dataset /path/to/output_dataset/
+bagel quality-report   --dataset /path/to/output_dataset/ -o report.json
+```
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `inspect` | Show topics, message counts, time ranges (`--fps-stats` / `--suggest-image-size` for diagnostics). |
+| `scaffold` | Auto-generate a starter `robot_config.yaml` from an unknown robot's bag(s); auto-runs `validate-config` unless `--no-validate`. |
+| `convert` | Convert bag(s) to a LeRobot v3.0 dataset. |
+| `validate-config` | Check a YAML config against a bag (topics / msg_type / image size). |
+| `validate-dataset` | Verify a generated dataset conforms to LeRobot Dataset v3.0 (files, `info.json`, parquet schemas, cross-checks). |
+| `quality-report` | Score data quality (null/NaN, out-of-range, freeze frames, video↔data reconciliation) into a 0..1 report. |
+| `audit-timestamps` | Audit timestamp continuity of a generated dataset. |
+| `validate-msg` | Syntax-check a `.msg` file. |
+| `preview` | Write a self-contained static HTML report (summary, quality, sample frames, stats) for a dataset; read-only, no server. |
+| `push-to-hub` | Upload a generated dataset to the HuggingFace Hub with an auto-generated dataset card (opt-in; `--dry-run` plans only). |
+| `to-mcap` | Convert ROS1 `.bag` recordings to ROS2 MCAP bags. |
+| `ui` | Launch a localhost (127.0.0.1-only) control UI for the browse → scaffold → convert → quality loop. Frontend/backend separated; every action shows its equivalent `bagel ...` CLI command. |
+
+Full options for every command are in
+[`docs/cli_reference.md`](docs/cli_reference.md).
+
+**`convert` progress and run metadata.** `convert` shows a tqdm ETA progress
+bar by default. `--json` emits the run's `job_summary` to stdout, `--quiet`
+suppresses the bar and INFO logs, and `--skip-failed` records a failed bag and
+continues (the dataset finalizes from the good episodes) instead of aborting.
+Every run also writes two files under `meta/`: `conversion_log.json` (provenance
+— input SHA256, per-bag frame counts/timing, codec, config snapshot + hash,
+bagel/ffmpeg versions, run timestamp) and `job_summary.json` (success/fail
+counts, throughput, byte sizes, per-worker / per-episode breakdown).
+
+**`--json` on report commands.** `validate-config`, `validate-dataset`,
+`quality-report`, `audit-timestamps`, `inspect`, `validate-msg`, and `to-mcap`
+all accept `--json` to print their report dict to stdout (suppressing the human
+summary). The file flags (`--json-out`, `-o`/`--report`) still work.
+
+**Config: splits, TF features, typo detection.** A `split:` block in
+`robot_config.yaml` sets `train`/`val`/`test` ratios (default `train=1.0`, a
+single split that is byte-identical to the legacy output) and `min_length` (drop
+episodes shorter than N frames); `info.json["splits"]` then holds contiguous
+ranges. A feature can be looked up across the TF tree with `frame_from` /
+`frame_to` (set `topic: /tf`, `msg_type: tf2_msgs/msg/TFMessage`), optionally
+yielding euler angles via the `orientation.euler_xyz` selector. Unknown keys in
+the config now raise an error with a "did you mean: X?" suggestion; run
+`validate-config --suggest-fixes` for copy-pasteable `image_size` fixes. See
+[`docs/cli_reference.md`](docs/cli_reference.md) for details.
+
+**`convert --resume`** is a safe re-run guard (P0 scope only): converting into
+a non-empty `--output` *without* `--resume` now aborts to avoid corrupting an
+existing dataset. With `--resume`, a finalized dataset is a no-op and a crashed
+(non-finalized) output is wiped and rebuilt. Skipping already-converted
+episodes is a planned P1 feature, not yet implemented.
+
+**Depth decoders.** `compressedDepth` (RVL-compressed 16-bit depth, e.g. the
+HSR head depth) and raw `sensor_msgs/msg/Image` with `mono16` encoding are
+supported. Depth is stored as an 8-bit grayscale video feature with
+`video.is_depth_map: true` — note this is lossy 8-bit, so precision is reduced.
+`configs/hsr.yaml` has a commented "Depth (optional)" block showing how to
+enable it.
+
+## Local UI
+
+`bagel ui` launches a **localhost (127.0.0.1-only) control UI** that walks the
+browse bag → scaffold/edit config → convert (with progress) → quality + preview
+loop in the browser. The frontend and backend are **separated**: a Python
+backend (stdlib `http.server`, no new dependencies) holds all privilege behind
+an allow-listed JSON API, while the TypeScript + HTML frontend (in
+[`ui/`](ui/README.md)) is presentation-only. The **CLI is the source of truth** —
+every UI action shows (and lets you copy) the equivalent `bagel ...` command.
+
+It runs as a host process (not Docker), so it can reach bags anywhere under the
+allow-listed roots. Security: it binds `127.0.0.1` only, mints a per-launch
+session token (printed in the URL as `?token=...`), and confines all filesystem
+access to the `--bags-root` / `--output-root` directories (path traversal is
+blocked). It is not network-exposed.
+
+Build the frontend once, then launch:
+
+```bash
+# 1. Build the frontend bundle (needs node/npm; only for building)
+cd ui && npm install && npm run build && cd ..
+
+# 2. Launch the UI (Python only at runtime)
+bagel ui \
+  --bags-root /path/to/bags \
+  --output-root /path/to/output
+```
+
+Frontend build details are in [`ui/README.md`](ui/README.md); full `bagel ui`
+options, the security model, and examples are in
+[`docs/cli_reference.md`](docs/cli_reference.md#ui).
+
 ## CLI Options
 
 | Option             | Description                                                                                          |
@@ -100,6 +203,9 @@ bagel validate-msg --msg msgs/my_robot/MyType.msg
 | `--ffmpeg-crf`     | Override quality. Mapped to `-crf` for CPU codecs and `-cq` for NVENC codecs.                        |
 | `--dry-run`        | Validate config and bags without writing output.                                                     |
 | `--repo-id`        | HuggingFace repo ID for the dataset.                                                                 |
+| `--json`           | Emit the run's `job_summary` JSON to stdout (suppresses the human `Done.` logs).                     |
+| `--quiet`          | Suppress the progress bar and INFO chatter.                                                          |
+| `--skip-failed`    | Record per-episode failures and continue (finalize from good episodes). Default: a failure aborts.   |
 | `-v / --verbose`   | Enable debug logging.                                                                                |
 
 ## Example Commands

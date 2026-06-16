@@ -83,6 +83,107 @@ bagel convert \
 bagel validate-msg --msg msgs/my_robot/MyType.msg
 ```
 
+### 6. 未知ロボットの config を雛形生成
+
+```bash
+bagel scaffold --bags /path/to/all_bags/ -o configs/my_robot.yaml
+```
+
+### 7. 生成データセットの検証とスコアリング
+
+```bash
+bagel validate-dataset --dataset /path/to/output_dataset/
+bagel quality-report   --dataset /path/to/output_dataset/ -o report.json
+```
+
+## コマンド一覧
+
+| コマンド | 用途 |
+|---|---|
+| `inspect` | トピック一覧・メッセージ数・時間範囲を表示（`--fps-stats` / `--suggest-image-size` で診断）。 |
+| `scaffold` | 未知ロボットの bag から `robot_config.yaml` の雛形を自動生成。`--no-validate` 以外では `validate-config` を自動実行。 |
+| `convert` | bag を LeRobot v3.0 データセットに変換。 |
+| `validate-config` | YAML config と bag の整合性を検証（トピック / msg_type / 画像サイズ）。 |
+| `validate-dataset` | 生成データセットが LeRobot Dataset v3.0 構造に準拠するか検証（ファイル / `info.json` / parquet スキーマ / 件数突き合わせ）。 |
+| `quality-report` | データ品質をスコアリング（null/NaN・範囲外・フリーズフレーム・動画↔データ整合）し 0..1 のレポートに集約。 |
+| `audit-timestamps` | 生成データセットのタイムスタンプ連続性を監査。 |
+| `validate-msg` | `.msg` ファイルの構文チェック。 |
+| `preview` | データセットの自己完結型 HTML レポート（サマリ・品質・サンプルフレーム・統計）を生成。読み取り専用・サーバ不要。 |
+| `push-to-hub` | 生成データセットを HuggingFace Hub にアップロードし、データセットカードを自動生成（任意機能。`--dry-run` は計画のみ）。 |
+| `to-mcap` | ROS1 `.bag` を ROS2 MCAP bag に変換。 |
+| `ui` | bag 閲覧 → scaffold → convert → 品質確認のループを回す localhost（127.0.0.1 限定）コントロール UI を起動。フロントエンドとバックエンドを分離し、各操作で等価な `bagel ...` CLI コマンドを表示。 |
+
+各コマンドの全オプションは
+[`docs/cli_reference.md`](docs/cli_reference.md) を参照してください。
+
+**`convert` の進捗とランメタデータ.** `convert` はデフォルトで tqdm の ETA 付き
+進捗バーを表示します。`--json` はそのランの `job_summary` を stdout に出力し、
+`--quiet` は進捗バーと INFO ログを抑制、`--skip-failed` は失敗した bag を記録して
+処理を継続します（中断せず、成功エピソードからデータセットを確定）。各ランは
+`meta/` 配下に 2 ファイルを書き出します: `conversion_log.json`（来歴 — 入力
+SHA256・bag 毎のフレーム数/所要時間・コーデック・config スナップショット+ハッシュ・
+bagel/ffmpeg バージョン・実行時刻）と `job_summary.json`（成功/失敗件数・スループット・
+バイト数・ワーカー別/エピソード別の内訳）。
+
+**レポート系コマンドの `--json`.** `validate-config` / `validate-dataset` /
+`quality-report` / `audit-timestamps` / `inspect` / `validate-msg` / `to-mcap`
+はいずれも `--json` でレポート dict を stdout に出力できます（人間向け summary は
+抑制）。従来のファイル出力フラグ（`--json-out`、`-o`/`--report`）も引き続き使えます。
+
+**config: split・TF 特徴量・タイポ検出.** `robot_config.yaml` の `split:` ブロック
+で `train`/`val`/`test` の比率（デフォルト `train=1.0`。単一 split で従来出力と
+バイト一致）と `min_length`（N フレーム未満のエピソードを除外）を指定できます。
+`info.json["splits"]` は連続レンジの集合になります。特徴量は `frame_from` /
+`frame_to`（`topic: /tf`、`msg_type: tf2_msgs/msg/TFMessage` を併記）で TF tree
+から姿勢を引け、`orientation.euler_xyz` セレクタで euler 角に変換できます。config
+の未知キーは「did you mean: X?」サジェスト付きでエラーになります。`image_size`
+不一致の修正例は `validate-config --suggest-fixes` で出力されます。詳細は
+[`docs/cli_reference.md`](docs/cli_reference.md) を参照してください。
+
+**`convert --resume`** は安全な再実行ガードです（P0 範囲のみ）。`--resume`
+なしで非空の `--output` に変換しようとすると、既存データセット破壊を防ぐため
+中断します。`--resume` を付けると、完成済みデータセットは何もせず（no-op）、
+途中でクラッシュした（未確定の）出力は削除して再変換します。変換済み
+エピソードのスキップは P1 予定の機能で、まだ未実装です。
+
+**深度デコーダ.** `compressedDepth`（RVL 圧縮の 16bit 深度、例: HSR ヘッド
+深度）と raw `sensor_msgs/msg/Image` の `mono16` エンコーディングに対応しま
+した。深度は `video.is_depth_map: true` を持つ 8bit グレースケール動画として
+保存されます（8bit のため精度は低下します）。`configs/hsr.yaml` に有効化方法
+を示すコメント付き「Depth (optional)」ブロックがあります。
+
+## ローカル UI
+
+`bagel ui` は **localhost（127.0.0.1 限定）コントロール UI** を起動し、bag 閲覧
+→ config の scaffold/編集 → convert（進捗表示付き）→ 品質確認 + preview のループを
+ブラウザで回せるようにします。フロントエンドとバックエンドは **分離**されており、
+Python バックエンド（標準ライブラリの `http.server`。新規依存なし）が許可リスト式の
+JSON API の背後にすべての権限を持ち、TypeScript + HTML のフロントエンド
+（[`ui/`](ui/README.md)）は表示専用です。**CLI が真実の源（source of truth）**で、
+各 UI 操作は等価な `bagel ...` コマンドを表示し、コピーできます。
+
+Docker ではなくホストプロセスとして動くため、許可リストのルート配下にある bag に
+どこからでも到達できます。セキュリティ: `127.0.0.1` のみにバインドし、起動ごとの
+セッショントークンを発行（URL に `?token=...` として表示）、ファイルアクセスは
+`--bags-root` / `--output-root` 配下に限定します（パストラバーサルは遮断）。
+ネットワークには公開されません。
+
+フロントエンドを一度ビルドしてから起動します:
+
+```bash
+# 1. フロントエンドのバンドルをビルド（node/npm が必要。ビルド時のみ）
+cd ui && npm install && npm run build && cd ..
+
+# 2. UI を起動（ランタイムは Python のみ）
+bagel ui \
+  --bags-root /path/to/bags \
+  --output-root /path/to/output
+```
+
+フロントエンドのビルド詳細は [`ui/README.md`](ui/README.md)、`bagel ui` の全
+オプション・セキュリティモデル・実例は
+[`docs/cli_reference.md`](docs/cli_reference.md#ui) を参照してください。
+
 ## CLI オプション一覧
 
 | オプション            | 説明                                                                                                          |
@@ -100,6 +201,9 @@ bagel validate-msg --msg msgs/my_robot/MyType.msg
 | `--ffmpeg-crf`       | 画質の上書き。CPU コーデックは `-crf`、NVENC は `-cq` にマップ。                                                |
 | `--dry-run`          | config と bag の検証のみ（出力なし）。                                                                          |
 | `--repo-id`          | HuggingFace リポジトリ ID。                                                                                    |
+| `--json`             | そのランの `job_summary` JSON を stdout に出力（人間向け `Done.` ログは抑制）。                                  |
+| `--quiet`            | 進捗バーと INFO ログを抑制。                                                                                    |
+| `--skip-failed`      | エピソード単位の失敗を記録して継続（成功分から確定）。デフォルトは失敗で中断。                                   |
 | `-v / --verbose`     | デバッグログを有効化。                                                                                          |
 
 ## サンプルコマンド集

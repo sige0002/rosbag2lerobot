@@ -21,6 +21,7 @@ sudo apt-get install ffmpeg    # 動画エンコードに必須
 | `validate-msg` | `.msg` 構文チェック | `bagel validate-msg --msg msgs/my_robot/MyType.msg` |
 | `audit-timestamps` | 生成データセットの timestamp 連続性監査 | `bagel audit-timestamps --dataset <out>/` |
 | `to-mcap` | ROS1 `.bag` → ROS2 MCAP に事前変換 | `bagel to-mcap <src>.bag -o <out>/` |
+| `ui` | localhost(127.0.0.1 限定) コントロール UI を起動 | `bagel ui --bags-root <bags>/ --output-root <out>/` |
 
 ### convert の主要オプション
 
@@ -35,6 +36,19 @@ bagel convert --config configs/hsr.yaml --bags <bags>/ --output <out>/ --video-c
 bagel convert --config configs/hsr.yaml --bags <bags>/ --output <out>/ --no-gpu
 # 書き込まず検証のみ
 bagel convert --config configs/hsr.yaml --bags <bags>/ --output /tmp/dry --dry-run
+```
+
+### ui（ローカル UI）
+
+`127.0.0.1` 限定・起動ごとのセッショントークン（URL に `?token=`）・FE/BE 分離。
+`--bags-root`/`--output-root` は繰り返し指定可、`--port`(既定 8765)、`--no-open`。
+初回のみフロントエンドのビルドが必要（node/npm はビルド時のみ。詳細 [ui/README.md](ui/README.md)）。
+
+```bash
+# 1. フロントエンドをビルド（初回のみ）
+cd ui && npm install && npm run build && cd ..
+# 2. UI を起動
+bagel ui --bags-root <bags>/ --output-root <out>/
 ```
 
 ## テスト / リント
