@@ -136,9 +136,9 @@ def test_job_summary_json_stdout(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
-    # The final stdout line is a valid JSON summary dict.
-    last_line = result.output.strip().splitlines()[-1]
-    payload = json.loads(last_line)
+    # --json prints the summary dict (indent=2) to stdout; logging goes to
+    # stderr, so the whole stdout is a single JSON object.
+    payload = json.loads(result.output)
     assert payload["n_success"] == 3
     assert "total_frames" in payload
 
