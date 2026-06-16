@@ -11,7 +11,9 @@ from bagel.config import (
     CustomMsgDef,
     FeatureMapping,
     ResamplingConfig,
+    SplitConfig,
     build_default_config,
+    compute_splits,
     load_config,
 )
 
@@ -420,3 +422,188 @@ class TestCustomMsgDef:
     def test_empty_package(self) -> None:
         with pytest.raises(ValueError, match="package.*must not be empty"):
             CustomMsgDef(msg_file="file.msg", package="")
+
+
+# ---------------------------------------------------------------------------
+# Unknown-key (typo) detection (⑪)
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownKeyDetection:
+    """Unknown config keys raise ValueError with a difflib suggestion."""
+
+    def test_resampling_typo(self, tmp_path: Path) -> None:
+        d = _minimal_config_dict()
+        d["resampling"] = {"align_to_require": False}
+        path = tmp_path / "c.yaml"
+        path.write_text(yaml.safe_dump(d))
+        with pytest.raises(ValueError, match="did you mean: align_to_required"):
+            load_config(path)
+
+    def test_feature_image_size_typo(self, tmp_path: Path) -> None:
+        d = _minimal_config_dict()
+        d["observations"][0]["image_sizes"] = [480, 640, 3]
+        path = tmp_path / "c.yaml"
+        path.write_text(yaml.safe_dump(d))
+        with pytest.raises(ValueError, match="did you mean: image_size"):
+            load_config(path)
+
+    def test_top_level_unknown_key(self, tmp_path: Path) -> None:
+        # Singular 'observation' is a typo for 'observations'.
+        d = _minimal_config_dict()
+        d["observation"] = "oops"
+        path = tmp_path / "c.yaml"
+        path.write_text(yaml.safe_dump(d))
+        with pytest.raises(ValueError, match="Unknown top-level key"):
+            load_config(path)
+
+    def test_split_typo(self, tmp_path: Path) -> None:
+        d = _minimal_config_dict()
+        d["split"] = {"trian": 1.0}
+        path = tmp_path / "c.yaml"
+        path.write_text(yaml.safe_dump(d))
+        with pytest.raises(ValueError, match="did you mean: train"):
+            load_config(path)
+
+    def test_custom_msg_typo(self, tmp_path: Path) -> None:
+        d = _minimal_config_dict()
+        d["custom_msgs"] = [{"msg_file": "x.msg", "packge": "pkg"}]
+        path = tmp_path / "c.yaml"
+        path.write_text(yaml.safe_dump(d))
+        with pytest.raises(ValueError, match="did you mean: package"):
+            load_config(path)
+
+
+def test_all_shipped_configs_load() -> None:
+    """Regression: every parseable configs/*.yaml loads without error.
+
+    Guards against the unknown-key check rejecting a key actually used by a
+    shipped config. ``robot_template.yaml`` is fully commented out (YAML root
+    is ``None``) and is not a loadable config, so it is excluded here.
+    """
+    configs_dir = Path(__file__).resolve().parent.parent / "configs"
+    loadable = [
+        p
+        for p in sorted(configs_dir.glob("*.yaml"))
+        if yaml.safe_load(p.read_text()) is not None
+    ]
+    assert loadable, "expected at least one loadable shipped config"
+    for path in loadable:
+        load_config(path)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# SplitConfig + compute_splits (⑨)
+# ---------------------------------------------------------------------------
+
+
+class TestSplitConfig:
+    def test_default_is_train_only(self) -> None:
+        sc = SplitConfig()
+        assert sc.train == 1.0
+        assert sc.val == 0.0
+        assert sc.test == 0.0
+        assert sc.min_length == 0
+        assert sc.ratios == {"train": 1.0, "val": 0.0, "test": 0.0}
+
+    def test_three_way_valid(self) -> None:
+        sc = SplitConfig(train=0.7, val=0.15, test=0.15)
+        assert abs(sc.train + sc.val + sc.test - 1.0) < 1e-9
+
+    def test_ratios_must_sum_to_one(self) -> None:
+        with pytest.raises(ValueError, match="sum to 1.0"):
+            SplitConfig(train=0.7, val=0.1, test=0.1)
+
+    def test_ratio_out_of_range(self) -> None:
+        with pytest.raises(ValueError, match="in .0, 1."):
+            SplitConfig(train=1.5, val=0.0, test=0.0)
+
+    def test_negative_min_length(self) -> None:
+        with pytest.raises(ValueError, match="min_length"):
+            SplitConfig(train=1.0, min_length=-1)
+
+    def test_split_parsed_from_yaml(self, tmp_path: Path) -> None:
+        d = _minimal_config_dict()
+        d["split"] = {"train": 0.8, "val": 0.1, "test": 0.1, "min_length": 5}
+        path = tmp_path / "c.yaml"
+        path.write_text(yaml.safe_dump(d))
+        cfg = load_config(path)
+        assert cfg.split.train == 0.8
+        assert cfg.split.min_length == 5
+
+    def test_split_defaults_when_absent(self, tmp_path: Path) -> None:
+        path = tmp_path / "c.yaml"
+        path.write_text(yaml.safe_dump(_minimal_config_dict()))
+        cfg = load_config(path)
+        assert cfg.split == SplitConfig()
+
+
+class TestComputeSplits:
+    def test_default_is_legacy_single_split(self) -> None:
+        # Byte-identical to the legacy {"train": "0:N"}.
+        assert compute_splits(5, {"train": 1.0, "val": 0.0, "test": 0.0}) == {
+            "train": "0:5"
+        }
+
+    def test_three_way_contiguous_partition(self) -> None:
+        splits = compute_splits(7, {"train": 0.7, "val": 0.15, "test": 0.15})
+        # round(0.7*7)=5, round(0.15*7)=1, test absorbs 7-5-1=1.
+        assert splits == {"train": "0:5", "val": "5:6", "test": "6:7"}
+        _assert_partition(splits, 7)
+
+    def test_zero_width_splits_omitted(self) -> None:
+        splits = compute_splits(4, {"train": 0.5, "val": 0.0, "test": 0.5})
+        assert "val" not in splits
+        _assert_partition(splits, 4)
+
+    def test_test_absorbs_remainder(self) -> None:
+        splits = compute_splits(10, {"train": 0.33, "val": 0.33, "test": 0.34})
+        _assert_partition(splits, 10)
+
+    def test_ratio_overrun_clamped(self) -> None:
+        # round(0.5*3)=2 for both train and val -> naive sum 4 > 3 would force
+        # n_test=-1. The clamp keeps it a valid partition of [0, 3).
+        splits = compute_splits(3, {"train": 0.5, "val": 0.5, "test": 0.0})
+        assert splits == {"train": "0:2", "val": "2:3"}
+        _assert_partition(splits, 3)
+        _assert_passes_validation(splits, 3)
+
+    def test_small_n_partitions(self) -> None:
+        for n in (1, 2):
+            for ratios in (
+                {"train": 0.5, "val": 0.5, "test": 0.0},
+                {"train": 0.34, "val": 0.33, "test": 0.33},
+                {"train": 1.0, "val": 0.0, "test": 0.0},
+            ):
+                splits = compute_splits(n, ratios)
+                _assert_partition(splits, n)
+                _assert_passes_validation(splits, n)
+
+    def test_default_passes_validation_byte_identical(self) -> None:
+        # The default single-split is byte-identical to {"train": "0:N"} and
+        # passes the dataset validator's partition check.
+        splits = compute_splits(4, {"train": 1.0, "val": 0.0, "test": 0.0})
+        assert splits == {"train": "0:4"}
+        _assert_passes_validation(splits, 4)
+
+
+def _assert_passes_validation(splits: dict[str, str], total: int) -> None:
+    """Assert ``splits`` is accepted by validation._check_splits_partition."""
+    from bagel.validation import DatasetValidationReport, _check_splits_partition
+
+    report = DatasetValidationReport(dataset="x")
+    _check_splits_partition(splits, total, report)
+    assert report.errors() == [], [i.to_dict() for i in report.errors()]
+
+
+def _assert_partition(splits: dict[str, str], total: int) -> None:
+    """Assert ``splits`` is a contiguous gap-free partition of ``[0, total)``."""
+    intervals = sorted(
+        (int(v.split(":")[0]), int(v.split(":")[1])) for v in splits.values()
+    )
+    prev = 0
+    for a, b in intervals:
+        assert a == prev, (a, prev, splits)
+        assert a < b
+        prev = b
+    assert prev == total, (prev, total, splits)

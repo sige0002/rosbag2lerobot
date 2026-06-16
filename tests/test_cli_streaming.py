@@ -26,6 +26,7 @@ import pytest
 
 from bagel import cli as cli_module
 from bagel.cli import _iter_episodes_parallel, _iter_episodes_serial
+from bagel.config import SplitConfig
 
 
 # ---------------------------------------------------------------------------
@@ -51,9 +52,14 @@ class _FakeResampler:
 class _FakeCfg:
     """Minimal RobotConfig stand-in with just the fields the CLI touches."""
 
-    def __init__(self, task: str = "default-task", fps: int = 30) -> None:
+    def __init__(
+        self, task: str = "default-task", fps: int = 30, min_length: int = 0
+    ) -> None:
         self.task = task
         self.fps = fps
+        # The episode iterators read cfg.split.min_length for the producer-side
+        # length filter; default 0 keeps every episode (legacy behavior).
+        self.split = SplitConfig(train=1.0, min_length=min_length)
 
 
 def _make_frames(n: int, tag: int) -> list[dict[str, Any]]:
@@ -131,13 +137,58 @@ class TestIterEpisodesSerial:
 
         assert result == [[]]
 
+    def test_min_length_drops_short_episode_everywhere(self, tmp_path: Path) -> None:
+        """Episodes shorter than min_length are never yielded and never
+        reported via on_episode_done (so totals stay consistent)."""
+        bag_paths = [tmp_path / f"bag_{i}" for i in range(3)]
+        for bp in bag_paths:
+            bp.mkdir()
+
+        # bag_1 is 1 frame (below the threshold of 3) -> dropped.
+        fake_episodes = {
+            bag_paths[0]: _make_frames(5, tag=0),
+            bag_paths[1]: _make_frames(1, tag=1),
+            bag_paths[2]: _make_frames(4, tag=2),
+        }
+
+        def fake_process_episode(bag_path, cfg, resampler):  # type: ignore[no-untyped-def]
+            return list(fake_episodes[bag_path])
+
+        cfg = _FakeCfg(fps=30, min_length=3)
+        bag_specs = [(f"t{i}", []) for i in range(3)]
+        reported: list[tuple[int, bool, int]] = []
+
+        def on_done(res) -> None:  # type: ignore[no-untyped-def]
+            reported.append((res.index, res.success, res.n_frames))
+
+        with mock.patch.object(
+            cli_module, "_process_episode", side_effect=fake_process_episode
+        ):
+            result = list(
+                _iter_episodes_serial(
+                    bag_paths,
+                    cfg,
+                    _FakeResampler(),
+                    bag_specs,
+                    on_episode_done=on_done,
+                ),  # type: ignore[arg-type]
+            )
+
+        # Only the two long episodes are yielded; the short one is absent.
+        assert [ep[0]["_tag"] for ep in result] == [0, 2]
+        # And the dropped episode never reaches on_episode_done.
+        assert [r[0] for r in reported] == [0, 2]
+        assert all(r[1] for r in reported)
+
 
 # ---------------------------------------------------------------------------
 # _iter_episodes_parallel
 # ---------------------------------------------------------------------------
 
 
-def _make_completed_future(result: tuple[int, list[dict[str, Any]], str]) -> Future:
+def _make_completed_future(
+    result: tuple[int, list[dict[str, Any]], str, int, float],
+) -> Future:
     """Build a pre-completed Future carrying ``result``. Used to simulate
     workers that have already finished when ``as_completed`` observes them."""
     fut: Future = Future()
@@ -172,7 +223,7 @@ class _FakeExecutor:
 
     # Convenience: resolve a given future in-place with a result.
     def complete(
-        self, idx: int, result: tuple[int, list[dict[str, Any]], str]
+        self, idx: int, result: tuple[int, list[dict[str, Any]], str, int, float]
     ) -> Future:
         self._futures[idx].set_result(result)
         return self._futures[idx]
@@ -198,9 +249,9 @@ class TestIterEpisodesParallel:
 
         # Build the per-bag worker results (tagged so we can verify order).
         worker_results = [
-            (0, _make_frames(2, tag=0), "task-0"),
-            (1, _make_frames(3, tag=1), "task-1"),
-            (2, _make_frames(4, tag=2), "task-2"),
+            (0, _make_frames(2, tag=0), "task-0", 1000, 0.1),
+            (1, _make_frames(3, tag=1), "task-1", 1001, 0.1),
+            (2, _make_frames(4, tag=2), "task-2", 1002, 0.1),
         ]
 
         fake_pool = _FakeExecutor()
@@ -262,9 +313,9 @@ class TestIterEpisodesParallel:
             bp.mkdir()
 
         worker_results = [
-            (0, _make_frames(2, tag=0), "t0"),
-            (1, _make_frames(3, tag=1), "t1"),
-            (2, _make_frames(4, tag=2), "t2"),
+            (0, _make_frames(2, tag=0), "t0", 1000, 0.1),
+            (1, _make_frames(3, tag=1), "t1", 1001, 0.1),
+            (2, _make_frames(4, tag=2), "t2", 1002, 0.1),
         ]
 
         fake_pool = _FakeExecutor()
@@ -301,6 +352,62 @@ class TestIterEpisodesParallel:
             )
 
         assert [ep[0]["_tag"] for ep in yielded] == [0, 1, 2]
+
+    def test_min_length_drops_short_episode_keeps_order(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A short middle episode is hopped over in the drain so the surviving
+        episodes still stream out contiguously and are never reported."""
+        bag_paths = [tmp_path / f"bag_{i}" for i in range(3)]
+        for bp in bag_paths:
+            bp.mkdir()
+
+        # bag_1 is 1 frame (< min_length 3) -> dropped.
+        worker_results = [
+            (0, _make_frames(5, tag=0), "t0", 1000, 0.1),
+            (1, _make_frames(1, tag=1), "t1", 1001, 0.1),
+            (2, _make_frames(4, tag=2), "t2", 1002, 0.1),
+        ]
+
+        fake_pool = _FakeExecutor()
+
+        def fake_executor_ctor(*args: Any, **kwargs: Any) -> _FakeExecutor:
+            return fake_pool
+
+        def fake_as_completed(
+            futs: dict[Future, int] | list[Future],
+        ) -> list[Future]:
+            order = (0, 1, 2)
+            for ep_idx in order:
+                fake_pool.complete(ep_idx, worker_results[ep_idx])
+            return [fake_pool._futures[i] for i in order]
+
+        bag_specs = [(f"t{i}", []) for i in range(3)]
+        reported: list[int] = []
+
+        with (
+            mock.patch.object(
+                cli_module, "ProcessPoolExecutor", side_effect=fake_executor_ctor
+            ),
+            mock.patch.object(
+                cli_module, "as_completed", side_effect=fake_as_completed
+            ),
+        ):
+            yielded = list(
+                _iter_episodes_parallel(
+                    bag_paths,
+                    _FakeCfg(task="y", fps=30, min_length=3),
+                    _FakeResampler(),
+                    workers=3,
+                    bag_specs=bag_specs,
+                    on_episode_done=lambda r: reported.append(r.index),
+                ),  # type: ignore[arg-type]
+            )
+
+        # The short episode is absent from the yielded stream and the report.
+        assert [ep[0]["_tag"] for ep in yielded] == [0, 2]
+        assert reported == [0, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +446,7 @@ class TestWriteDatasetAcceptsIterator:
                 self.repo_id = None
                 self.observations = [_Feat("observation.state", dim=3)]
                 self.actions = [_Feat("action", dim=3)]
+                self.split = SplitConfig()
 
         cfg = _Cfg()
 

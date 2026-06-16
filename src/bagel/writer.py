@@ -50,7 +50,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from PIL import Image
 
-from bagel.config import RobotConfig
+from bagel.config import RobotConfig, compute_splits
 from bagel.stats import StatsComputer
 from bagel.task_spec import (
     SubtaskSpan,
@@ -185,6 +185,8 @@ class DatasetWriter:
         ffmpeg_preset: str | None = None,
         ffmpeg_crf: int | None = None,
         has_subtasks: bool = False,
+        manifest_extra: dict[str, Any] | None = None,
+        splits: dict[str, float] | None = None,
     ) -> None:
         """Initialize the dataset writer.
 
@@ -202,6 +204,12 @@ class DatasetWriter:
             ffmpeg_crf: Explicit quality override. Mapped to ``-crf`` for CPU
                 encoders and ``-cq`` for NVENC encoders. ``None`` uses the per-
                 codec default.
+            manifest_extra: Optional provenance fields (inputs, config snapshot,
+                versions, run timestamp) merged into ``meta/conversion_log.json``.
+                ``None`` still writes the writer-owned subset.
+            splits: ``{split_name: ratio}`` train/val/test fractions for the
+                ``info.json`` ``splits`` partition. ``None`` falls back to the
+                legacy single ``{"train": "0:N"}`` split.
         """
         self.output_dir = Path(output_dir)
         self.config = config
@@ -212,6 +220,10 @@ class DatasetWriter:
         self._ffmpeg_preset = ffmpeg_preset
         self._ffmpeg_crf = ffmpeg_crf
         self.has_subtasks = has_subtasks
+        self._manifest_extra = manifest_extra
+        # ``None`` (or default {"train": 1.0}) reproduces the legacy single
+        # split exactly; compute_splits handles the byte-identical fallback.
+        self._splits = splits if splits is not None else {"train": 1.0}
 
         # State tracking
         self._global_index: int = 0
@@ -383,6 +395,10 @@ class DatasetWriter:
         ep_len = len(self._episode_frames)
         ep_idx = self._episode_index
 
+        # Note: the ``min_length`` episode-length filter (⑨) is applied
+        # upstream in the CLI episode iterators, so short episodes never reach
+        # the writer. Every episode that arrives here is written.
+
         # Determine tasks for this episode
         ep_task_indices = {f["task_index"] for f in self._episode_frames}
         ep_task_strs = [t for t, ti in self._tasks.items() if ti in ep_task_indices]
@@ -466,11 +482,20 @@ class DatasetWriter:
         ep_meta.update(self._format_episode_stats(self._episode_stats.compute()))
         self._episodes_meta.append(ep_meta)
 
-        # Reset per-episode state
+        # Reset per-episode state and advance the episode counter.
+        self._reset_episode_state()
+        self._episode_index += 1
+
+    def _reset_episode_state(self) -> None:
+        """Clear all per-episode buffers (frames, stats, subtasks, image state).
+
+        Called at the end of a successful :meth:`save_episode`. The episode
+        counter (``_episode_index``) is intentionally NOT touched here so the
+        caller advances it after a successful save.
+        """
         self._episode_frames.clear()
         self._episode_stats = StatsComputer()
         self._frame_index = 0
-        self._episode_index += 1
         self._current_ep_subtasks = []
         for vkey in self._video_keys:
             self._image_last_frame[vkey] = None
@@ -517,6 +542,7 @@ class DatasetWriter:
         stats = self._stats.compute()
         self._write_stats_json(stats)
         self._write_info_json()
+        self._write_conversion_log()
 
         # Drop the staging directory tree (videos/ subdir + the .staging
         # parent) once everything has been materialized.
@@ -1251,7 +1277,7 @@ class DatasetWriter:
             "data_files_size_in_mb": _DATA_FILES_SIZE_IN_MB,
             "video_files_size_in_mb": _VIDEO_FILES_SIZE_IN_MB,
             "fps": self.fps,
-            "splits": {"train": f"0:{total_episodes}"},
+            "splits": compute_splits(total_episodes, self._splits),
             "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
             "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
             "features": self.features,
@@ -1266,6 +1292,33 @@ class DatasetWriter:
         path = self.output_dir / "meta" / "info.json"
         with open(path, "w") as f:
             json.dump(info, f, indent=2)
+
+    def _write_conversion_log(self) -> None:
+        """Write ``meta/conversion_log.json`` (conversion manifest, plan.md D-2).
+
+        Merges the writer-owned encode/output facts (codec/preset/crf, episode
+        and frame totals, fps, per-episode lengths) with the caller-supplied
+        provenance in ``self._manifest_extra`` (inputs, config snapshot,
+        versions, run timestamp). When ``manifest_extra`` is ``None`` only the
+        writer-owned subset is written. The output is additive/optional and is
+        not part of the structural validation contract.
+        """
+        log: dict[str, Any] = {
+            "codec": self.video_codec,
+            "codec_label": _codec_label(self.video_codec),
+            "ffmpeg_preset": self._ffmpeg_preset,
+            "ffmpeg_crf": self._ffmpeg_crf,
+            "fps": self.fps,
+            "total_episodes": self._episode_index,
+            "total_frames": self._global_index,
+            "episode_lengths": [m["length"] for m in self._episodes_meta],
+        }
+        if self._manifest_extra:
+            log.update(self._manifest_extra)
+
+        path = self.output_dir / "meta" / "conversion_log.json"
+        with open(path, "w") as f:
+            json.dump(log, f, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -1322,6 +1375,8 @@ def _build_features(
         if fm.is_image:
             h, w = (fm.image_size[0], fm.image_size[1]) if fm.image_size else (480, 640)
             c = fm.image_size[2] if (fm.image_size and len(fm.image_size) == 3) else 3
+            # compressedDepth トピックは深度マップとして記録する（4a: 8bit動画に正規化）。
+            is_depth = fm.topic.lower().endswith("compresseddepth")
             features[fm.key] = {
                 "dtype": "video",
                 "shape": [h, w, c],
@@ -1331,7 +1386,7 @@ def _build_features(
                     "video.width": w,
                     "video.codec": codec_label,
                     "video.pix_fmt": "yuv420p",
-                    "video.is_depth_map": False,
+                    "video.is_depth_map": is_depth,
                     "video.fps": config.fps,
                     "video.channels": c,
                     "has_audio": False,
@@ -1377,6 +1432,7 @@ def write_dataset(
     ffmpeg_preset: str | None = None,
     ffmpeg_crf: int | None = None,
     has_subtasks: bool = False,
+    manifest_extra: dict[str, Any] | None = None,
 ) -> None:
     """Convert a stream of episode frame-lists into a LeRobot v3.0 dataset.
 
@@ -1399,6 +1455,9 @@ def write_dataset(
         repo_id: Optional HuggingFace repo ID.
         ffmpeg_preset: Explicit ffmpeg ``-preset`` override (``None`` = codec default).
         ffmpeg_crf: Explicit quality override (``None`` = codec default).
+        manifest_extra: Optional provenance fields forwarded to the writer for
+            ``meta/conversion_log.json`` (inputs, config snapshot, versions,
+            run timestamp). ``None`` writes only the writer-owned subset.
     """
     output_dir = Path(output_dir)
 
@@ -1562,6 +1621,8 @@ def write_dataset(
         ffmpeg_preset=ffmpeg_preset,
         ffmpeg_crf=ffmpeg_crf,
         has_subtasks=has_subtasks,
+        manifest_extra=manifest_extra,
+        splits=config.split.ratios,
     )
 
     # --- Stream first_ep + remaining episodes into the writer ---
