@@ -43,7 +43,31 @@ __all__ = [
     "ValidationIssue",
     "DatasetValidationReport",
     "validate_dataset",
+    "video_feature_keys",
 ]
+
+
+def video_feature_keys(info: dict[str, Any]) -> list[str]:
+    """Return ``dtype == "video"`` feature keys from ``info`` in declaration order.
+
+    Shared predicate for the inline ``features`` filters previously duplicated
+    across :mod:`bagel.quality`, :mod:`bagel.preview`, and this module. Lives
+    here (the lowest-coupling module: stdlib + pyarrow only) so importing it
+    introduces no new heavy dependency chain or import cycle.
+
+    Args:
+        info: Parsed ``meta/info.json`` (or any mapping with a ``features``
+            sub-mapping of ``{key: feature_spec}``).
+
+    Returns:
+        Video feature keys in ``info["features"]`` iteration (declaration)
+        order. Non-dict feature specs are skipped.
+    """
+    return [
+        k
+        for k, v in info.get("features", {}).items()
+        if isinstance(v, dict) and v.get("dtype") == "video"
+    ]
 
 
 # Severity labels for issues. ``ERROR`` always fails; ``WARN`` only fails
@@ -269,10 +293,7 @@ def _check_required_files(
         )
 
     # videos: >= 1 mp4 per dtype=="video" feature key.
-    features = info.get("features", {}) if isinstance(info, dict) else {}
-    for key, feat_spec in features.items():
-        if not isinstance(feat_spec, dict) or feat_spec.get("dtype") != "video":
-            continue
+    for key in video_feature_keys(info) if isinstance(info, dict) else []:
         vdir = dataset_dir / "videos" / key
         mp4s = sorted(vdir.rglob("*.mp4")) if vdir.is_dir() else []
         if not mp4s:
@@ -536,11 +557,7 @@ def _check_episodes_parquet(
 
     # Per video-key columns. Cross-check against info.json video features so a
     # declared video feature missing its episodes columns is an ERROR.
-    info_video_keys = {
-        k
-        for k, v in info.get("features", {}).items()
-        if isinstance(v, dict) and v.get("dtype") == "video"
-    }
+    info_video_keys = set(video_feature_keys(info))
     present_vkeys = set(_discover_video_keys(columns))
     for vk in info_video_keys:
         try:

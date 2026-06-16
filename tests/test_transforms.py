@@ -151,3 +151,31 @@ class TestTransformLookup:
         lk = self._build()
         with pytest.raises(ValueError):
             lk.lookup("A", "Z", 1000)
+
+    def test_repeated_lookups_identical(self):
+        # Caching (adjacency + path + stamp arrays) must not change results:
+        # repeated lookups return identical values.
+        lk = self._build()
+        first = lk.lookup("A", "C", 1400)
+        for _ in range(5):
+            assert np.array_equal(lk.lookup("A", "C", 1400), first)
+        # A different stamp still resolves nearest-in-time correctly after the
+        # path/adjacency caches are warm.
+        assert lk.lookup("A", "C", 2600)[:3] == pytest.approx([1, 2, 0])
+
+    def test_add_after_lookup_invalidates_cache(self):
+        # Warm the caches with a lookup, then extend the tree; the new topology
+        # and the new dynamic sample must be reflected (cache invalidation).
+        lk = self._build()
+        lk.lookup("A", "C", 1400)  # warms adjacency + path caches
+
+        # New static edge C->D extends the path A-B-C-D; must now be reachable.
+        lk.add_static(_msg(_tf("C", "D", 0, 0, (0, 0, 1), (0, 0, 0, 1))))
+        out = lk.lookup("A", "D", 1400)  # pose of D in A at t->1000
+        # A<-B(1,0,0) ∘ B<-C(0,1,0)@1000 ∘ C<-D(0,0,1) = (1,1,1).
+        assert out[:3] == pytest.approx([1, 1, 1])
+
+        # A new dynamic sample on B->C nearer to a queried stamp must be picked
+        # up too (stamp-array cache rebuilt on the next sorted access).
+        lk.add_dynamic(_msg(_tf("B", "C", 0, 2500, (0, 9, 0), (0, 0, 0, 1))))
+        assert lk.lookup("A", "C", 2500)[:3] == pytest.approx([1, 9, 0])

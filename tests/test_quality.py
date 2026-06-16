@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
 import pytest
 from click.testing import CliRunner
 from PIL import Image
@@ -21,6 +22,7 @@ from PIL import Image
 from bagel.cli import main
 from bagel.quality import (
     QualityReport,
+    _column_to_2d,
     compute_quality_report,
     count_freeze_frames,
     count_out_of_range,
@@ -115,6 +117,101 @@ def test_align_bounds_dim_mismatch_skips(caplog) -> None:
         )
     assert lo is None and hi is None
     assert any("dim mismatch" in r.message for r in caplog.records)
+
+
+def _column_to_2d_legacy(col: pa.ChunkedArray) -> tuple[np.ndarray, int]:
+    """Pre-vectorization reference impl of ``_column_to_2d`` (semantics oracle).
+
+    Mirrors the original per-element Python ``float()`` path so the vectorized
+    implementation can be asserted byte-identical against it.
+    """
+    n_null = col.null_count
+    if pa.types.is_fixed_size_list(col.type) or pa.types.is_list(col.type):
+        dim = col.type.list_size if pa.types.is_fixed_size_list(col.type) else None
+        pylist = col.to_pylist()
+        rows: list[list[float]] = []
+        for item in pylist:
+            if item is None:
+                rows.append([float("nan")] * (dim if dim else 1))
+            else:
+                rows.append([float("nan") if v is None else float(v) for v in item])
+        values = np.asarray(rows, dtype=np.float64) if rows else np.empty((0, dim or 1))
+    else:
+        np_arr = col.to_numpy(zero_copy_only=False).astype(np.float64)
+        values = np_arr.reshape(-1, 1)
+    return values, int(n_null)
+
+
+def _assert_column_2d_equal(
+    got: tuple[np.ndarray, int], want: tuple[np.ndarray, int]
+) -> None:
+    gv, gn = got
+    wv, wn = want
+    assert gn == wn
+    assert gv.dtype == wv.dtype == np.float64
+    assert gv.shape == wv.shape
+    g_nan = np.isnan(gv)
+    # NaN positions must match exactly (row nulls + per-element nulls).
+    assert np.array_equal(g_nan, np.isnan(wv))
+    # Finite entries equal (NaN-aware allclose on the non-NaN cells).
+    assert np.allclose(gv[~g_nan], wv[~g_nan], rtol=0, atol=0)
+
+
+def test_column_to_2d_fixed_size_list_row_and_elem_nulls() -> None:
+    # fixed_size_list<float32, 3> with a fully-null row AND per-element nulls.
+    col = pa.chunked_array(
+        [
+            pa.array(
+                [[1.5, 2.5, 3.5], None, [4.0, None, 6.25]],
+                type=pa.list_(pa.float32(), 3),
+            )
+        ]
+    )
+    _assert_column_2d_equal(_column_to_2d(col), _column_to_2d_legacy(col))
+
+
+def test_column_to_2d_fixed_size_list_multichunk() -> None:
+    # Multiple chunks must combine and reshape identically.
+    c1 = pa.array([[1.0, 2.0]], type=pa.list_(pa.float32(), 2))
+    c2 = pa.array([None, [3.0, None]], type=pa.list_(pa.float32(), 2))
+    col = pa.chunked_array([c1, c2])
+    _assert_column_2d_equal(_column_to_2d(col), _column_to_2d_legacy(col))
+
+
+def test_column_to_2d_fixed_size_list_empty() -> None:
+    col = pa.chunked_array([pa.array([], type=pa.list_(pa.float32(), 4))])
+    got, n = _column_to_2d(col)
+    assert n == 0
+    assert got.shape == (0, 4)
+    assert got.dtype == np.float64
+
+
+def test_column_to_2d_scalar_int64() -> None:
+    col = pa.chunked_array([pa.array([1, 2, 3, None], type=pa.int64())])
+    _assert_column_2d_equal(_column_to_2d(col), _column_to_2d_legacy(col))
+
+
+def test_video_feature_keys_filters_and_orders() -> None:
+    from bagel.validation import video_feature_keys
+
+    info = {
+        "features": {
+            "observation.state": {"dtype": "float32", "shape": [2]},
+            "observation.images.cam_b": {"dtype": "video", "shape": [3, 4, 3]},
+            "frame_index": {"dtype": "int64", "shape": [1]},
+            "observation.images.cam_a": {"dtype": "video", "shape": [3, 4, 3]},
+            # Non-dict feature spec must be skipped, not crash.
+            "bogus": "not-a-dict",
+        }
+    }
+    # Only dtype=="video" dict specs, in declaration order.
+    assert video_feature_keys(info) == [
+        "observation.images.cam_b",
+        "observation.images.cam_a",
+    ]
+    # Missing/empty features -> empty list.
+    assert video_feature_keys({}) == []
+    assert video_feature_keys({"features": {}}) == []
 
 
 # ---------------------------------------------------------------------------

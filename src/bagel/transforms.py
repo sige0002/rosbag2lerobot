@@ -13,7 +13,6 @@ quaternion(xyzw)→euler 変換 :func:`quat_xyzw_to_euler` を提供する。
 
 from __future__ import annotations
 
-import bisect
 import math
 from dataclasses import dataclass, field
 from typing import Any
@@ -148,6 +147,19 @@ class TransformLookup:
         default_factory=dict
     )
     _dynamic_sorted: bool = field(default=True)
+    # ---- caches (memoized; invalidated on ingest) ---------------------
+    # 隣接辞書は ingest 後に固定なので一度だけ構築してキャッシュする。
+    _adj_cache: dict[str, set[str]] | None = field(default=None)
+    # 動的タイムラインの stamp 列を int64 numpy 配列で保持し、_nearest は
+    # 毎回 Python リストを組み直さず searchsorted で二分探索する。
+    _dynamic_stamps: dict[tuple[str, str], np.ndarray] = field(default_factory=dict)
+    # 解決済みの frame 経路を (frame_from, frame_to) 毎にキャッシュする。
+    _path_cache: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+
+    def _invalidate_caches(self) -> None:
+        """ingest でトポロジが変わったらキャッシュを破棄する。"""
+        self._adj_cache = None
+        self._path_cache.clear()
 
     # ---- ingest -------------------------------------------------------
     def _iter_transforms(self, tf_msg: Any):
@@ -165,25 +177,33 @@ class TransformLookup:
         """``/tf_static`` メッセージ（複数 transform 可）を取り込む。"""
         for parent, child, _stamp_ns, mat in self._iter_transforms(tf_msg):
             self._static[(parent, child)] = mat
+        self._invalidate_caches()
 
     def add_dynamic(self, tf_msg: Any) -> None:
         """``/tf`` メッセージ（複数 transform 可）を取り込む。"""
         for parent, child, stamp_ns, mat in self._iter_transforms(tf_msg):
             self._dynamic.setdefault((parent, child), []).append((stamp_ns, mat))
             self._dynamic_sorted = False
+        self._invalidate_caches()
 
     def _ensure_sorted(self) -> None:
         if self._dynamic_sorted:
             return
-        for timeline in self._dynamic.values():
+        # ソートと同時に stamp 列の numpy キャッシュを作り直す（_nearest 用）。
+        self._dynamic_stamps = {}
+        for edge, timeline in self._dynamic.items():
             timeline.sort(key=lambda kv: kv[0])
+            self._dynamic_stamps[edge] = np.fromiter(
+                (s for s, _ in timeline), dtype=np.int64, count=len(timeline)
+            )
         self._dynamic_sorted = True
 
     # ---- query --------------------------------------------------------
-    def _nearest(self, timeline: list[tuple[int, np.ndarray]], stamp_ns: int):
+    def _nearest(self, edge: tuple[str, str], stamp_ns: int):
         """時刻 ``stamp_ns`` に最も近い動的変換を返す（nearest-in-time）。"""
-        stamps = [s for s, _ in timeline]
-        i = bisect.bisect_left(stamps, stamp_ns)
+        timeline = self._dynamic[edge]
+        stamps = self._dynamic_stamps[edge]
+        i = int(np.searchsorted(stamps, stamp_ns, side="left"))
         if i == 0:
             return timeline[0][1]
         if i >= len(timeline):
@@ -199,24 +219,28 @@ class TransformLookup:
         if (child, parent) in self._static:
             return np.linalg.inv(self._static[(child, parent)])
         if (parent, child) in self._dynamic:
-            return self._nearest(self._dynamic[(parent, child)], stamp_ns)
+            return self._nearest((parent, child), stamp_ns)
         if (child, parent) in self._dynamic:
-            return np.linalg.inv(
-                self._nearest(self._dynamic[(child, parent)], stamp_ns)
-            )
+            return np.linalg.inv(self._nearest((child, parent), stamp_ns))
         return None
 
     def _neighbors(self) -> dict[str, set[str]]:
+        if self._adj_cache is not None:
+            return self._adj_cache
         adj: dict[str, set[str]] = {}
         for a, b in list(self._static.keys()) + list(self._dynamic.keys()):
             adj.setdefault(a, set()).add(b)
             adj.setdefault(b, set()).add(a)
+        self._adj_cache = adj
         return adj
 
     def _find_path(self, frame_from: str, frame_to: str) -> list[str]:
         """frame_from→frame_to の frame 列を BFS で求める（無向）。"""
         if frame_from == frame_to:
             return [frame_from]
+        cached = self._path_cache.get((frame_from, frame_to))
+        if cached is not None:
+            return cached
         adj = self._neighbors()
         if frame_from not in adj or frame_to not in adj:
             raise ValueError(f"frame not in tf tree: {frame_from!r} / {frame_to!r}")
@@ -236,6 +260,7 @@ class TransformLookup:
         while path[-1] != frame_from:
             path.append(prev[path[-1]])
         path.reverse()
+        self._path_cache[(frame_from, frame_to)] = path
         return path
 
     def lookup(self, frame_to: str, frame_from: str, stamp_ns: int) -> np.ndarray:

@@ -41,6 +41,7 @@ from bagel.quality import (
     _read_info,
     compute_quality_report,
 )
+from bagel.validation import video_feature_keys
 
 logger = logging.getLogger(__name__)
 
@@ -337,15 +338,6 @@ def _frames_to_base64_jpeg(
     return out
 
 
-def _video_feature_keys(info: dict[str, Any]) -> list[str]:
-    """Return video feature keys from ``info`` in declaration order."""
-    return [
-        k
-        for k, v in info.get("features", {}).items()
-        if isinstance(v, dict) and v.get("dtype") == "video"
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -381,7 +373,7 @@ def generate_preview(
     stats = _load_stats(dataset_dir)
     quality = compute_quality_report(dataset_dir, sample_video=sample_video).to_dict()
 
-    video_keys = _video_feature_keys(info)
+    video_keys = video_feature_keys(info)
     raw_frames = _grab_sample_frames(dataset_dir, video_keys, n_frames)
     frames_b64 = _frames_to_base64_jpeg(raw_frames)
 

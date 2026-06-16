@@ -43,6 +43,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from bagel.audit import _collect_episodes_parquet, _discover_video_keys
+from bagel.validation import video_feature_keys
 
 logger = logging.getLogger(__name__)
 
@@ -388,18 +389,34 @@ def _column_to_2d(col: pa.ChunkedArray) -> tuple[np.ndarray, int]:
     columns. Arrow nulls are converted to NaN in the returned array so the
     NaN mask covers them too, but the *null* count is taken from arrow's
     ``null_count`` before conversion. Returns ``(values_2d, n_null)``.
+
+    The fixed_size_list path is vectorized through arrow: ``combine_chunks().values``
+    yields the flat child array of length ``n_rows * list_size`` with both
+    row-level and per-element nulls already marked, and arrow's
+    ``to_numpy(zero_copy_only=False)`` maps every such null to ``NaN``. This
+    avoids the per-scalar ``float()`` round-trip (≈1.4M calls on a 14-d feature
+    over 100k frames) while producing a byte-identical result. The plain
+    variable-length ``list`` branch keeps the per-element fallback (bagel's
+    writer only emits fixed_size_list; this is defensive).
     """
     n_null = col.null_count
-    if pa.types.is_fixed_size_list(col.type) or pa.types.is_list(col.type):
-        dim = col.type.list_size if pa.types.is_fixed_size_list(col.type) else None
+    if pa.types.is_fixed_size_list(col.type):
+        list_size = col.type.list_size
+        if col.length() == 0:
+            values = np.empty((0, list_size), dtype=np.float64)
+        else:
+            child = col.combine_chunks().values
+            flat = child.to_numpy(zero_copy_only=False).astype(np.float64)
+            values = flat.reshape(-1, list_size)
+    elif pa.types.is_list(col.type):
         pylist = col.to_pylist()
         rows: list[list[float]] = []
         for item in pylist:
             if item is None:
-                rows.append([float("nan")] * (dim if dim else 1))
+                rows.append([float("nan")])
             else:
                 rows.append([float("nan") if v is None else float(v) for v in item])
-        values = np.asarray(rows, dtype=np.float64) if rows else np.empty((0, dim or 1))
+        values = np.asarray(rows, dtype=np.float64) if rows else np.empty((0, 1))
     else:
         np_arr = col.to_numpy(zero_copy_only=False).astype(np.float64)
         values = np_arr.reshape(-1, 1)
@@ -511,11 +528,7 @@ def _compute_video_reconciliation(
     sample_video: bool,
 ) -> list[VideoReconciliation]:
     """Reconcile mp4 frame counts with parquet lengths + count freeze frames."""
-    video_keys = [
-        k
-        for k, v in info.get("features", {}).items()
-        if isinstance(v, dict) and v.get("dtype") == "video"
-    ]
+    video_keys = video_feature_keys(info)
     if not video_keys:
         return []
 
