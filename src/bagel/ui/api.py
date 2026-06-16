@@ -23,9 +23,15 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import bagel
+import yaml
 from bagel import __version__ as _BAGEL_VERSION
 from bagel.ui.jobs import JobRegistry
 from bagel.ui.security import PathSecurityError, resolve_in_roots, Root
+
+# Valid values for the global options patched by ``config_apply``.
+_RESAMPLING_POLICIES = frozenset({"hold", "nearest", "drop"})
+_STAMP_SOURCES = frozenset({"header", "receive"})
 
 
 class ApiError(Exception):
@@ -56,6 +62,17 @@ def _is_bag_dir(path: Path) -> bool:
 def _quote(value: str) -> str:
     """Shell-quote a value for the displayed ``command`` string."""
     return shlex.quote(value)
+
+
+def _configs_dir() -> Path:
+    """Return the repo-root ``configs/`` directory holding shipped configs.
+
+    Located relative to the installed ``bagel`` package: ``src/bagel/__init__.py``
+    -> ``bagel`` -> ``src`` -> repo root, then ``configs``. The directory may not
+    exist (e.g. an installed wheel without the source tree); callers handle a
+    missing directory gracefully.
+    """
+    return Path(bagel.__file__).resolve().parent.parent.parent / "configs"
 
 
 class Api:
@@ -111,6 +128,167 @@ class Api:
             "roots": [r.to_dict() for r in self.roots],
             "bagel_version": self.bagel_version,
         }
+
+    # -- shipped-config template picker ----------------------------------
+
+    def _list_configs(self) -> list[tuple[str, str]]:
+        """Return ``(name, robot_type)`` for each shipped robot config.
+
+        Scans :func:`_configs_dir` for ``*.yaml`` files, parses each with
+        ``yaml.safe_load`` and keeps only those whose top level is a mapping
+        (this drops all-comment templates like ``robot_template.yaml`` whose
+        ``safe_load`` is ``None``). ``robot_type`` is the parsed ``robot_type``
+        key if present, else ``""``. The list is sorted by name. A missing
+        configs directory yields an empty list.
+        """
+        configs_dir = _configs_dir()
+        if not configs_dir.is_dir():
+            return []
+        out: list[tuple[str, str]] = []
+        for path in sorted(configs_dir.glob("*.yaml"), key=lambda p: p.name):
+            try:
+                parsed = yaml.safe_load(path.read_text())
+            except (OSError, yaml.YAMLError):
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            robot_type = parsed.get("robot_type")
+            out.append((path.name, str(robot_type) if robot_type is not None else ""))
+        return out
+
+    def config_list(self) -> dict[str, Any]:
+        """``GET /api/config-list`` -- shipped robot configs for the picker.
+
+        Returns:
+            ``{command, configs:[{name, robot_type}, ...]}`` sorted by name.
+            Empty ``configs`` when no configs directory is present.
+        """
+        configs = [{"name": name, "robot_type": rt} for name, rt in self._list_configs()]
+        return {"command": "ls configs", "configs": configs}
+
+    def config_template(self, name: str) -> dict[str, Any]:
+        """``GET /api/config-template?name=<name>`` -- raw text of a shipped config.
+
+        Security: ``name`` must be a plain basename that appears in the
+        :meth:`config_list` set — no ``/`` separators, no ``..``, no absolute
+        paths — so reads cannot escape the configs directory.
+
+        Args:
+            name: The basename of a shipped config (e.g. ``"hsr.yaml"``).
+
+        Returns:
+            ``{command, name, yaml}`` where ``yaml`` is the raw file text.
+
+        Raises:
+            ApiError: 400 if ``name`` is empty/missing; 403 if ``name`` is not a
+                plain listed basename.
+        """
+        if not name:
+            raise ApiError(400, "Missing 'name'.")
+        # Confine to the exact set of listed config basenames. This rejects any
+        # path component ("/", "..", absolute) implicitly: such a value can never
+        # equal a bare filename returned by _list_configs.
+        allowed = {n for n, _ in self._list_configs()}
+        if name not in allowed:
+            raise ApiError(403, f"Not a shipped config: {name!r}")
+        path = _configs_dir() / name
+        try:
+            text = path.read_text()
+        except OSError as exc:
+            raise ApiError(404, f"Config not readable: {name!r}") from exc
+        return {"command": f"cat configs/{name}", "name": name, "yaml": text}
+
+    def config_apply(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/config-apply`` -- patch global options into a YAML string.
+
+        The supplied ``yaml`` text is parsed with ``yaml.safe_load``, the
+        present/non-null ``options`` are applied in Python, and the result is
+        re-emitted with ``yaml.safe_dump``. Because this is a load/dump round
+        trip, **YAML comments are dropped** from the returned text.
+
+        Applied options (only when present and non-null):
+
+        - top level: ``robot_type`` (str), ``task`` (str), ``fps`` (int).
+        - under ``resampling`` (created if absent): ``resampling_policy`` ->
+          ``default_policy``, ``tolerance_ms``, ``align_to_required`` (bool).
+        - ``stamp_source`` (str): set on every item of ``observations`` and
+          ``actions``.
+
+        Args:
+            body: ``{yaml: <text>, options: {...}}``.
+
+        Returns:
+            ``{command, yaml}`` with the patched YAML text.
+
+        Raises:
+            ApiError: 400 if the YAML is a non-mapping, or if
+                ``resampling_policy`` / ``stamp_source`` carry invalid values.
+        """
+        raw = str(body.get("yaml", ""))
+        options = body.get("options") or {}
+        if not isinstance(options, dict):
+            raise ApiError(400, "'options' must be an object.")
+
+        if raw.strip():
+            try:
+                cfg = yaml.safe_load(raw)
+            except yaml.YAMLError as exc:
+                raise ApiError(400, f"Invalid YAML: {exc}") from exc
+        else:
+            cfg = {}
+        if cfg is None:
+            cfg = {}
+        if not isinstance(cfg, dict):
+            raise ApiError(400, "config is not a mapping")
+
+        self._apply_options(cfg, options)
+
+        patched = yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True)
+        return {"command": "# apply options", "yaml": patched}
+
+    def _apply_options(self, cfg: dict[str, Any], options: dict[str, Any]) -> None:
+        """Mutate ``cfg`` in place with the present/non-null ``options``.
+
+        See :meth:`config_apply` for the option semantics. Validates
+        ``resampling_policy`` and ``stamp_source`` before applying.
+        """
+        robot_type = options.get("robot_type")
+        if robot_type is not None:
+            cfg["robot_type"] = str(robot_type)
+        task = options.get("task")
+        if task is not None:
+            cfg["task"] = str(task)
+        fps = options.get("fps")
+        if fps is not None:
+            cfg["fps"] = int(fps)
+
+        policy = options.get("resampling_policy")
+        if policy is not None and policy not in _RESAMPLING_POLICIES:
+            raise ApiError(400, f"Invalid resampling_policy: {policy!r}")
+        tolerance_ms = options.get("tolerance_ms")
+        align = options.get("align_to_required")
+        if policy is not None or tolerance_ms is not None or align is not None:
+            resampling = cfg.get("resampling")
+            if not isinstance(resampling, dict):
+                resampling = {}
+                cfg["resampling"] = resampling
+            if policy is not None:
+                resampling["default_policy"] = str(policy)
+            if tolerance_ms is not None:
+                resampling["tolerance_ms"] = float(tolerance_ms)
+            if align is not None:
+                resampling["align_to_required"] = bool(align)
+
+        stamp_source = options.get("stamp_source")
+        if stamp_source is not None:
+            if stamp_source not in _STAMP_SOURCES:
+                raise ApiError(400, f"Invalid stamp_source: {stamp_source!r}")
+            for section in ("observations", "actions"):
+                items = cfg.get(section)
+                if isinstance(items, list):
+                    for item in items:
+                        if isinstance(item, dict):
+                            item["stamp_source"] = str(stamp_source)
 
     def browse(self, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /api/browse`` -- list a directory under a root.

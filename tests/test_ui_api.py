@@ -320,6 +320,73 @@ def test_config(server_ctx) -> None:
     assert labels == {"bags", "output"}
 
 
+def test_config_list(server_ctx) -> None:
+    conn, _roots = server_ctx
+    status, body, _ctype = _get(conn, "/api/config-list")
+    assert status == 200, body
+    data = json.loads(body)
+    assert "command" in data
+    assert isinstance(data["configs"], list)
+    # The repo ships configs/hsr.yaml; entries are {name, robot_type}.
+    names = {c["name"] for c in data["configs"]}
+    assert "hsr.yaml" in names
+    for c in data["configs"]:
+        assert set(c) >= {"name", "robot_type"}
+
+
+def test_config_template_ok_and_traversal(server_ctx) -> None:
+    conn, _roots = server_ctx
+    status, body, _ctype = _get(conn, "/api/config-template?name=hsr.yaml")
+    assert status == 200, body
+    data = json.loads(body)
+    assert data["name"] == "hsr.yaml"
+    assert "robot_type" in data["yaml"]
+    # A non-listed / traversal name must be rejected (not read from disk).
+    status_bad, body_bad, _ = _get(
+        conn, "/api/config-template?name=../../etc/passwd"
+    )
+    assert status_bad in (400, 403), body_bad
+    # Missing name -> 400.
+    status_missing, _b, _c = _get(conn, "/api/config-template")
+    assert status_missing == 400
+
+
+def test_config_apply(server_ctx) -> None:
+    import yaml
+
+    conn, _roots = server_ctx
+    src = (
+        "robot_type: x\nfps: 10\ntask: t\n"
+        "observations:\n  - {key: observation.state, topic: /js, "
+        "msg_type: sensor_msgs/msg/JointState, stamp_source: header}\n"
+        "actions: []\nresampling: {default_policy: nearest}\n"
+    )
+    status, data = _post(
+        conn,
+        "/api/config-apply",
+        {
+            "yaml": src,
+            "options": {
+                "robot_type": "hsr",
+                "fps": 20,
+                "resampling_policy": "hold",
+                "stamp_source": "receive",
+            },
+        },
+    )
+    assert status == 200, data
+    cfg = yaml.safe_load(data["yaml"])
+    assert cfg["robot_type"] == "hsr"
+    assert cfg["fps"] == 20
+    assert cfg["resampling"]["default_policy"] == "hold"
+    assert cfg["observations"][0]["stamp_source"] == "receive"
+    # Invalid option values are rejected.
+    status_bad, _d = _post(
+        conn, "/api/config-apply", {"yaml": src, "options": {"resampling_policy": "bogus"}}
+    )
+    assert status_bad == 400
+
+
 def test_browse(server_ctx) -> None:
     conn, _roots = server_ctx
     status, data = _post(conn, "/api/browse", {"root_id": 0, "subpath": "group"})

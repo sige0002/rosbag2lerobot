@@ -173,6 +173,11 @@ def _make_handler(api: Api, static_dir: Path) -> type[BaseHTTPRequestHandler]:
                 elif path.startswith("/api/convert/"):
                     job_id = path[len("/api/convert/") :]
                     self._send_json(200, api.convert_status(job_id))
+                elif path == "/api/config-list":
+                    self._send_json(200, api.config_list())
+                elif path == "/api/config-template":
+                    name = query.get("name", [""])[0]
+                    self._send_json(200, api.config_template(name))
                 else:
                     self._send_error_json(404, f"No such endpoint: {path}")
             except ApiError as exc:
@@ -210,6 +215,7 @@ def _make_handler(api: Api, static_dir: Path) -> type[BaseHTTPRequestHandler]:
                     "/api/convert": api.convert,
                     "/api/validate-dataset": api.validate_dataset,
                     "/api/quality-report": api.quality_report,
+                    "/api/config-apply": api.config_apply,
                 }.get(path)
                 if handler is None:
                     self._send_error_json(404, f"No such endpoint: {path}")
