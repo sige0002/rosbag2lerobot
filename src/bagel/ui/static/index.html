@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>bagel ui (placeholder)</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 2rem auto;
+        max-width: 44rem;
+        line-height: 1.5;
+        color: #222;
+      }
+      code {
+        background: #f2f2f2;
+        padding: 0.1rem 0.3rem;
+        border-radius: 3px;
+      }
+      pre {
+        background: #f7f7f7;
+        padding: 1rem;
+        border-radius: 6px;
+        overflow-x: auto;
+      }
+      .ok {
+        color: #137333;
+      }
+      .err {
+        color: #b00020;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>bagel ui</h1>
+    <p>
+      This is the placeholder backend page. The real frontend (built under
+      <code>ui/</code>) replaces it once <code>ui/dist/</code> exists.
+    </p>
+    <p>API reachability:</p>
+    <pre id="status">checking GET /api/config ...</pre>
+    <script type="module">
+      // Read the token the launcher embedded in the URL (?token=...).
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get("token") || "";
+      const el = document.getElementById("status");
+      fetch("/api/config", { headers: { "X-Bagel-Token": token } })
+        .then(async (r) => {
+          const body = await r.json();
+          if (!r.ok) {
+            el.textContent = "ERROR " + r.status + ": " + JSON.stringify(body, null, 2);
+            el.className = "err";
+            return;
+          }
+          el.textContent =
+            "OK — bagel " +
+            body.bagel_version +
+            "\nroots:\n" +
+            body.roots.map((x) => "  [" + x.id + "] " + x.label + " -> " + x.path).join("\n");
+          el.className = "ok";
+        })
+        .catch((e) => {
+          el.textContent = "fetch failed: " + e;
+          el.className = "err";
+        });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>bagel ui</title>
+    <style>
+      :root {
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --border: #d9dde3;
+        --fg: #1d2733;
+        --muted: #6b7785;
+        --accent: #2563eb;
+        --accent-fg: #ffffff;
+        --ok: #15803d;
+        --ok-bg: #e7f6ec;
+        --warn: #92600a;
+        --warn-bg: #fbf2dd;
+        --error: #b42318;
+        --error-bg: #fdecea;
+        --info: #1f5f8b;
+        --info-bg: #e8f1f8;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        font-size: 14px;
+        line-height: 1.45;
+        color: var(--fg);
+        background: var(--bg);
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        padding: 14px 20px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--border);
+      }
+      header h1 {
+        font-size: 18px;
+        margin: 0;
+      }
+      header .sub {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      #bagel-version {
+        margin-left: auto;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px 18px;
+      }
+      .panel > h2 {
+        margin: 0 0 12px;
+        font-size: 15px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .panel > h2 .step {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: var(--accent);
+        color: var(--accent-fg);
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      label {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      input[type="text"],
+      input[type="number"],
+      select {
+        font: inherit;
+        padding: 5px 8px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: #fff;
+        color: var(--fg);
+      }
+      input[type="number"] {
+        width: 90px;
+      }
+      textarea {
+        width: 100%;
+        min-height: 240px;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        padding: 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        resize: vertical;
+        white-space: pre;
+        overflow: auto;
+      }
+      button {
+        font: inherit;
+        cursor: pointer;
+        padding: 6px 12px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: #fff;
+        color: var(--fg);
+      }
+      button:hover:not(:disabled) {
+        border-color: var(--accent);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      button.primary {
+        background: var(--accent);
+        color: var(--accent-fg);
+        border-color: var(--accent);
+      }
+      .muted {
+        color: var(--muted);
+      }
+
+      /* Browser entries */
+      #browse-path {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+        word-break: break-all;
+      }
+      #browse-entries {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        max-height: 280px;
+        overflow: auto;
+        padding: 4px;
+        background: #fcfcfd;
+      }
+      .entry {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 3px 6px;
+        border-radius: 4px;
+      }
+      .entry:hover {
+        background: #f0f2f5;
+      }
+      .entry-icon {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--muted);
+        white-space: pre;
+      }
+      .dir-link {
+        border: none;
+        background: none;
+        padding: 0;
+        color: var(--accent);
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      .entry-name {
+        font-family: var(--mono);
+        font-size: 12.5px;
+      }
+      #browse-selected {
+        margin: 10px 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: #eef2ff;
+        border: 1px solid #c7d2fe;
+        border-radius: 12px;
+        padding: 2px 4px 2px 10px;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .chip-x {
+        border: none;
+        background: none;
+        padding: 0 4px;
+        color: var(--muted);
+        line-height: 1;
+      }
+
+      /* Command display */
+      .cmd-box {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: #0f172a;
+        color: #e2e8f0;
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin: 10px 0;
+        overflow: auto;
+      }
+      .cmd-label {
+        color: #94a3b8;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      .cmd-text {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        white-space: pre;
+        flex: 1;
+      }
+      .copy-btn {
+        background: #1e293b;
+        color: #e2e8f0;
+        border: 1px solid #334155;
+        padding: 3px 10px;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .copy-btn:hover:not(:disabled) {
+        border-color: #64748b;
+      }
+
+      /* Status banners */
+      .status {
+        padding: 7px 10px;
+        border-radius: 5px;
+        font-size: 13px;
+        margin: 8px 0;
+      }
+      .status-info {
+        background: var(--info-bg);
+        color: var(--info);
+      }
+      .status-ok {
+        background: var(--ok-bg);
+        color: var(--ok);
+      }
+      .status-warn {
+        background: var(--warn-bg);
+        color: var(--warn);
+      }
+      .status-error {
+        background: var(--error-bg);
+        color: var(--error);
+      }
+
+      /* Reports */
+      pre.report {
+        background: #0f172a;
+        color: #e2e8f0;
+        padding: 12px;
+        border-radius: 6px;
+        overflow: auto;
+        max-height: 360px;
+        font-family: var(--mono);
+        font-size: 12px;
+        margin: 8px 0;
+      }
+      .list-head {
+        margin: 10px 0 4px;
+        font-size: 13px;
+      }
+      .list-error {
+        color: var(--error);
+      }
+      .list-warn {
+        color: var(--warn);
+      }
+      .list-info {
+        color: var(--info);
+      }
+      .msg-list {
+        margin: 0 0 8px;
+        padding-left: 20px;
+        font-family: var(--mono);
+        font-size: 12.5px;
+      }
+      .data-table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 12.5px;
+        margin: 6px 0 12px;
+      }
+      .data-table th,
+      .data-table td {
+        border: 1px solid var(--border);
+        padding: 4px 8px;
+        text-align: left;
+        font-family: var(--mono);
+      }
+      .data-table th {
+        background: #f0f2f5;
+      }
+      .quality-head {
+        display: flex;
+        gap: 18px;
+        margin: 8px 0;
+        font-size: 14px;
+      }
+      .quality-head .score {
+        font-weight: 600;
+      }
+
+      /* Progress */
+      #convert-progress {
+        margin: 10px 0;
+      }
+      .bar-track {
+        height: 16px;
+        background: #e5e8ec;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      #convert-bar {
+        height: 100%;
+        width: 0%;
+        background: var(--accent);
+        transition: width 0.3s ease;
+      }
+      #convert-progress-text {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--muted);
+        margin-top: 4px;
+      }
+
+      iframe#preview-frame {
+        width: 100%;
+        height: 520px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        margin-top: 10px;
+        background: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>bagel ui</h1>
+      <span class="sub">ROS2 rosbag → LeRobot Dataset v3.0</span>
+      <span id="bagel-version"></span>
+    </header>
+
+    <main>
+      <!-- Panel 1: Browse bag -->
+      <section class="panel" id="panel-browse">
+        <h2><span class="step">1</span> Browse &amp; inspect bags</h2>
+        <div class="row">
+          <label for="root-select">Root</label>
+          <select id="root-select"></select>
+          <button id="browse-up" type="button" disabled>↑ Up</button>
+          <span id="browse-path"></span>
+        </div>
+        <div id="browse-entries"></div>
+        <div id="browse-selected"></div>
+        <div class="row">
+          <button id="inspect-btn" class="primary" type="button" disabled>Inspect</button>
+        </div>
+        <div id="inspect-cmd"></div>
+        <div id="inspect-status"></div>
+        <div id="inspect-report"></div>
+      </section>
+
+      <!-- Panel 2: Scaffold + edit config -->
+      <section class="panel" id="panel-scaffold">
+        <h2><span class="step">2</span> Scaffold &amp; validate config</h2>
+        <div class="row">
+          <label for="scaffold-robot-type">robot_type</label>
+          <input type="text" id="scaffold-robot-type" placeholder="(optional)" />
+          <label for="scaffold-task">task</label>
+          <input type="text" id="scaffold-task" placeholder="(optional)" />
+          <label for="scaffold-fps">fps</label>
+          <input type="number" id="scaffold-fps" min="1" step="1" placeholder="(opt)" />
+          <button id="scaffold-btn" type="button">Generate config</button>
+        </div>
+        <div id="scaffold-cmd"></div>
+        <textarea id="config-text" spellcheck="false" placeholder="# Generated config YAML appears here (editable)."></textarea>
+        <div class="row">
+          <button id="validate-config-btn" class="primary" type="button">Validate config</button>
+        </div>
+        <div id="validate-config-cmd"></div>
+        <div id="validate-config-status"></div>
+        <div id="validate-config-report"></div>
+      </section>
+
+      <!-- Panel 3: Convert -->
+      <section class="panel" id="panel-convert">
+        <h2><span class="step">3</span> Convert</h2>
+        <div class="row">
+          <label for="convert-output">output (relative)</label>
+          <input type="text" id="convert-output" placeholder="e.g. output/my_dataset" />
+        </div>
+        <div class="row">
+          <label for="convert-fps">fps</label>
+          <input type="number" id="convert-fps" min="1" step="1" placeholder="(opt)" />
+          <label for="convert-workers">workers</label>
+          <input type="number" id="convert-workers" min="1" step="1" placeholder="(opt)" />
+          <label for="convert-codec">video_codec</label>
+          <input type="text" id="convert-codec" placeholder="(opt) e.g. libx264" />
+          <button id="convert-btn" class="primary" type="button">Convert</button>
+        </div>
+        <div id="convert-cmd"></div>
+        <div id="convert-status"></div>
+        <div id="convert-progress" hidden>
+          <div class="bar-track"><div id="convert-bar"></div></div>
+          <div id="convert-progress-text"></div>
+        </div>
+        <div id="convert-summary"></div>
+      </section>
+
+      <!-- Panel 4: Quality + preview -->
+      <section class="panel" id="panel-quality">
+        <h2><span class="step">4</span> Quality &amp; preview</h2>
+        <div class="row">
+          <label for="dataset-input">dataset (relative)</label>
+          <input type="text" id="dataset-input" placeholder="(defaults to last convert output)" />
+        </div>
+        <div class="row">
+          <button id="quality-btn" class="primary" type="button">Quality report</button>
+          <button id="validate-ds-btn" type="button">Validate dataset</button>
+          <button id="preview-btn" type="button">Open preview</button>
+        </div>
+        <div id="quality-cmd"></div>
+        <div id="quality-status"></div>
+        <div id="quality-report"></div>
+        <div id="validate-ds-cmd"></div>
+        <div id="validate-ds-status"></div>
+        <div id="validate-ds-report"></div>
+        <iframe id="preview-frame" hidden title="dataset preview"></iframe>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
