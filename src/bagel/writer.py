@@ -782,22 +782,30 @@ class DatasetWriter:
             stats = ep_stats.get(key)
             if stats is None:
                 continue
-            is_image = self.features[key].get("dtype") == "video"
-            is_int = self.features[key].get("dtype") == "int64"
             count = int(stats["count"][0]) if stats.get("count") else 0
             for stat in self._STAT_ORDER:
                 col = f"stats/{key}/{stat}"
                 if stat == "count":
                     cols[col] = [count]
-                    continue
-                vals = stats[stat]
-                if is_image:
-                    cols[col] = [[[float(v)]] for v in vals]
-                elif is_int and stat in ("min", "max"):
-                    cols[col] = [int(round(v)) for v in vals]
                 else:
-                    cols[col] = [float(v) for v in vals]
+                    cols[col] = self._shape_stat_value(key, stat, stats[stat])
         return cols
+
+    def _shape_stat_value(self, key: str, stat: str, vals: list[float]) -> Any:
+        """Shape a per-dimension stat list to the LeRobot v3.0 layout.
+
+        Image (video) features are nested to ``[C, 1, 1]``; integer features
+        keep integer min/max; everything else is a flat per-dimension
+        ``list[float]``.  Shared by the per-episode stats columns and the
+        global ``meta/stats.json``.
+        """
+        is_image = self.features.get(key, {}).get("dtype") == "video"
+        is_int = self.features.get(key, {}).get("dtype") == "int64"
+        if is_image:
+            return [[[float(v)]] for v in vals]
+        if is_int and stat in ("min", "max"):
+            return [int(round(v)) for v in vals]
+        return [float(v) for v in vals]
 
     def _stats_column_type(self, col: str) -> pa.DataType:
         """Return the pyarrow type for a ``stats/<feature>/<stat>`` column."""
@@ -1258,8 +1266,28 @@ class DatasetWriter:
 
     def _write_stats_json(self, stats: dict[str, dict[str, list[float]]]) -> None:
         path = self.output_dir / "meta" / "stats.json"
+        shaped = {key: self._shape_feature_stats(key, st) for key, st in stats.items()}
         with open(path, "w") as f:
-            json.dump(stats, f, indent=2)
+            json.dump(shaped, f, indent=2)
+
+    def _shape_feature_stats(
+        self, key: str, stats: dict[str, list[float]]
+    ) -> dict[str, Any]:
+        """Shape one feature's stats dict to the LeRobot v3.0 ``stats.json`` layout.
+
+        ``count`` becomes a single-element list; image (video) stats are nested
+        to ``[C, 1, 1]`` per channel (see :meth:`_shape_stat_value`).
+        """
+        out: dict[str, Any] = {}
+        count = int(stats["count"][0]) if stats.get("count") else 0
+        for stat in self._STAT_ORDER:
+            if stat not in stats:
+                continue
+            if stat == "count":
+                out[stat] = [count]
+            else:
+                out[stat] = self._shape_stat_value(key, stat, stats[stat])
+        return out
 
     def _write_info_json(self) -> None:
         """Write ``meta/info.json`` with dataset-level metadata and feature schema."""

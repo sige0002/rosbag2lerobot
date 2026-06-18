@@ -272,11 +272,17 @@ class TestDatasetWriterWithVideo:
         with open(tmp_path / "meta" / "stats.json") as f:
             stats = json.load(f)
         assert "observation.images.cam" in stats
-        # 128/255 ~ 0.502
+        cam = stats["observation.images.cam"]
+        # Image stats are nested to (C, 1, 1) per channel (LeRobot v3.0).
+        assert len(cam["mean"]) == 3
         for ch in range(3):
-            assert (
-                abs(stats["observation.images.cam"]["mean"][ch] - 128.0 / 255.0) < 0.01
-            )
+            assert np.array(cam["mean"][ch]).shape == (1, 1)
+            # 128/255 ~ 0.502
+            assert abs(cam["mean"][ch][0][0] - 128.0 / 255.0) < 0.01
+        # count is a single-element list (shape (1,)) holding the frame count.
+        assert cam["count"] == [5]
+        # Numeric feature count is also a single-element list, not per-dim.
+        assert stats["observation.state"]["count"] == [5]
 
 
 class TestVideoFilePermissions:

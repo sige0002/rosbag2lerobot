@@ -19,7 +19,8 @@ class TestStatsComputerNumeric:
         np.testing.assert_allclose(result["obs"]["max"], [1.0, 2.0, 3.0])
         np.testing.assert_allclose(result["obs"]["mean"], [1.0, 2.0, 3.0])
         np.testing.assert_allclose(result["obs"]["std"], [0.0, 0.0, 0.0])
-        assert result["obs"]["count"] == [1, 1, 1]
+        # count is a single-element list (LeRobot v3.0 shape (1,)), not per-dim.
+        assert result["obs"]["count"] == [1]
 
     def test_multiple_values(self) -> None:
         sc = StatsComputer()
@@ -78,3 +79,50 @@ class TestStatsComputerImage:
         result = sc.compute()
         assert "state" in result
         assert "img" in result
+
+    def test_image_stats_are_over_pixels(self) -> None:
+        """Image std/min/max/quantiles must be computed over every pixel.
+
+        Regression test: feeding frames whose per-frame spatial mean is constant
+        but whose pixels vary widely used to collapse std to ~0 and min==max
+        (frame-mean statistics). They must reflect the full pixel distribution.
+        """
+        sc = StatsComputer()
+        h = w = 32
+        base = np.tile(np.linspace(0, 255, w, dtype=np.float32), (h, 1))  # gradient
+        all_px = []
+        for i in range(50):
+            g = np.roll(base, i, axis=1)  # spatial mean stays constant across frames
+            img = np.stack([g, g[:, ::-1], g], axis=-1).astype(np.uint8)  # [H, W, 3]
+            sc.add_frame("cam", img)
+            all_px.append(img.reshape(-1, 3).astype(np.float32) / 255.0)
+        result = sc.compute()["cam"]
+        truth = np.concatenate(all_px)
+
+        # count is the number of frames, not pixels.
+        assert result["count"] == [50]
+        # std reflects pixel spread (~0.3 for a uniform gradient), not ~0.
+        np.testing.assert_allclose(result["std"], truth.std(axis=0), atol=1e-3)
+        assert min(result["std"]) > 0.1
+        # min/max span the full normalized range.
+        np.testing.assert_allclose(result["min"], truth.min(axis=0), atol=1e-3)
+        np.testing.assert_allclose(result["max"], truth.max(axis=0), atol=1e-3)
+        # quantiles are ordered and bracket the median.
+        for ch in range(3):
+            assert result["q01"][ch] < result["q50"][ch] < result["q99"][ch]
+
+    def test_image_quantiles_match_numpy(self) -> None:
+        """Histogram quantiles should track exact numpy quantiles over pixels."""
+        sc = StatsComputer()
+        rng = np.random.RandomState(0)
+        all_px = []
+        for _ in range(20):
+            img = rng.randint(0, 256, (40, 40, 3), dtype=np.uint8)
+            sc.add_frame("cam", img)
+            all_px.append(img.reshape(-1, 3).astype(np.float32) / 255.0)
+        result = sc.compute()["cam"]
+        truth = np.concatenate(all_px)
+        for q, key in [(0.01, "q01"), (0.5, "q50"), (0.99, "q99")]:
+            np.testing.assert_allclose(
+                result[key], np.quantile(truth, q, axis=0), atol=0.02
+            )
