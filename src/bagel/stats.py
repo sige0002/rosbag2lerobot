@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Callable
 
 import numpy as np
 
@@ -43,6 +44,14 @@ _FLUSH_ROWS = 500_000
 # Image downsampling parameters (mirror lerobot's ``auto_downsample_height_width``).
 _DOWNSAMPLE_TARGET = 150
 _DOWNSAMPLE_THRESHOLD = 300
+
+# Normalized values of the 256 possible uint8 pixel levels, computed exactly
+# like the per-pixel path (``astype(float32) / 255.0``). uint8 image batches
+# are folded through per-level value counts (np.bincount) instead of per-pixel
+# arithmetic: every pixel with the same uint8 level maps to the same float and
+# the same histogram bin, so the resulting statistics are identical.
+_UINT8_LEVELS_F32 = np.arange(256, dtype=np.uint8).astype(np.float32) / 255.0
+_UINT8_LEVELS_F64 = _UINT8_LEVELS_F32.astype(np.float64)
 
 
 def _downsample_image(img: np.ndarray) -> np.ndarray:
@@ -157,19 +166,20 @@ class StatsComputer:
 
     @staticmethod
     def _prepare_values(values: np.ndarray) -> np.ndarray:
-        """Normalize a frame to a 2-D ``(N, D)`` float32 batch.
+        """Normalize a frame to a 2-D ``(N, D)`` batch.
 
-        Numeric vectors become a single row ``(1, D)``; images ``[H, W, C]``
-        become ``(H*W, C)`` (every pixel, normalized to [0, 1], downsampled for
-        large frames like lerobot).
+        Numeric vectors become a single float32 row ``(1, D)``; images
+        ``[H, W, C]`` become ``(H*W, C)`` (every pixel, downsampled for large
+        frames like lerobot). uint8 images stay uint8 here — the [0, 1]
+        normalization happens level-wise in :meth:`_update_uint8` (identical
+        values, without touching every pixel); other image dtypes are
+        normalized to float32 as before.
         """
         arr = np.asarray(values)
         # Image: [H, W, C] -> every pixel as a per-channel sample.
         if arr.ndim == 3:
             arr = _downsample_image(arr)
-            if arr.dtype == np.uint8:
-                arr = arr.astype(np.float32) / 255.0
-            else:
+            if arr.dtype != np.uint8:
                 arr = arr.astype(np.float32)
             return arr.reshape(-1, arr.shape[-1])
         # Numeric scalar or vector -> one row.
@@ -180,26 +190,88 @@ class StatsComputer:
         """Fold the pending frame buffer into the running accumulator."""
         if not acc._buffer:
             return
-        batch = np.concatenate(acc._buffer, axis=0)
-        self._update(acc, batch)
+        if all(b.dtype == np.uint8 for b in acc._buffer):
+            self._update_uint8(acc, np.concatenate(acc._buffer, axis=0))
+        else:
+            # Mixed or float batches: normalize any uint8 rows the same way
+            # the per-pixel path always did, then take the generic path.
+            batch = np.concatenate(
+                [
+                    b.astype(np.float32) / 255.0 if b.dtype == np.uint8 else b
+                    for b in acc._buffer
+                ],
+                axis=0,
+            )
+            self._update(acc, batch)
         acc.frames += acc._buffer_frames
         acc._buffer.clear()
         acc._buffer_rows = 0
         acc._buffer_frames = 0
 
     def _update(self, acc: _FeatureAccumulator, batch: np.ndarray) -> None:
-        """Update running mean/mean_sq/min/max and histograms with a batch.
+        """Update the accumulator with a float ``(N, D)`` batch.
 
         Mirrors lerobot's ``RunningQuantileStats.update``: incremental mean and
         mean-of-squares, min/max tracking, dynamic histogram re-binning when the
         range expands, then per-dimension histogram accumulation.
         """
-        n, d = batch.shape
+        n, _ = batch.shape
         batch_min = batch.min(axis=0)
         batch_max = batch.max(axis=0)
         batch_mean = batch.mean(axis=0, dtype=np.float64)
         batch_mean_sq = np.mean(batch.astype(np.float64) ** 2, axis=0)
 
+        def hist_fn(i: int) -> np.ndarray:
+            counts, _ = np.histogram(batch[:, i], bins=acc.edges[i])
+            return counts
+
+        self._fold(acc, n, batch_min, batch_max, batch_mean, batch_mean_sq, hist_fn)
+
+    def _update_uint8(self, acc: _FeatureAccumulator, batch: np.ndarray) -> None:
+        """Update the accumulator with a uint8 image ``(N, D)`` batch.
+
+        Folds the batch through per-channel value counts over the 256 uint8
+        levels: min/max/mean/mean_sq and the histogram are all derived from
+        the counts, so the cost scales with 256*D instead of N*D. Results
+        match the per-pixel float path (every pixel of a given level yields
+        the same normalized float32 value and lands in the same bin).
+        """
+        n, d = batch.shape
+        level_counts = [
+            np.bincount(batch[:, i], minlength=256).astype(np.int64) for i in range(d)
+        ]
+        nonzero = [np.nonzero(c)[0] for c in level_counts]
+        batch_min = np.array([_UINT8_LEVELS_F32[z[0]] for z in nonzero])
+        batch_max = np.array([_UINT8_LEVELS_F32[z[-1]] for z in nonzero])
+        counts_mat = np.stack(level_counts, axis=1).astype(np.float64)  # (256, D)
+        batch_mean = (_UINT8_LEVELS_F64 @ counts_mat) / n
+        batch_mean_sq = ((_UINT8_LEVELS_F64**2) @ counts_mat) / n
+
+        def hist_fn(i: int) -> np.ndarray:
+            counts, _ = np.histogram(
+                _UINT8_LEVELS_F32, bins=acc.edges[i], weights=level_counts[i]
+            )
+            return counts.astype(np.int64)
+
+        self._fold(acc, n, batch_min, batch_max, batch_mean, batch_mean_sq, hist_fn)
+
+    def _fold(
+        self,
+        acc: _FeatureAccumulator,
+        n: int,
+        batch_min: np.ndarray,
+        batch_max: np.ndarray,
+        batch_mean: np.ndarray,
+        batch_mean_sq: np.ndarray,
+        hist_fn: "Callable[[int], np.ndarray]",
+    ) -> None:
+        """Fold one batch summary into the running accumulator state.
+
+        ``hist_fn(i)`` must return the batch's histogram counts for dimension
+        ``i`` over ``acc.edges[i]``; it is called after any re-binning so the
+        counts always target the up-to-date global range.
+        """
+        d = len(batch_min)
         if acc.count == 0:
             acc.mean = batch_mean
             acc.mean_sq = batch_mean_sq
@@ -229,8 +301,7 @@ class StatsComputer:
         # Histograms cover the (now up to date) global range, so no value is
         # dropped by np.histogram's outside-range clipping.
         for i in range(d):
-            counts, _ = np.histogram(batch[:, i], bins=acc.edges[i])
-            acc.hist[i] += counts
+            acc.hist[i] += hist_fn(i)
 
     def _rebin(self, acc: _FeatureAccumulator) -> None:
         """Re-bin every histogram to the expanded ``[min, max]`` range.

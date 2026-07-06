@@ -226,10 +226,10 @@ class TestVideoFrameAlignment:
         self,
         tmp_path: Path,
     ) -> None:
-        """All episodes well below 200 MB end up in one concatenated mp4.
+        """All episodes well below 200 MB end up in one aggregated mp4.
 
-        Exercises the ``_concatenate_videos`` filter+re-encode path that
-        had to be free of boundary frame drops.
+        Exercises the multi-episode streaming-encoder path, which must be
+        free of boundary frame drops.
         """
         _write_dataset(
             tmp_path,
@@ -238,7 +238,7 @@ class TestVideoFrameAlignment:
         )
         _assert_alignment(tmp_path, ["observation.images.cam"], fps=10)
 
-        # Sanity: there really is just one mp4 file (i.e. concat ran).
+        # Sanity: there really is just one mp4 file (episodes aggregated).
         mp4s = list(
             (tmp_path / "videos" / "observation.images.cam").rglob("*.mp4"),
         )

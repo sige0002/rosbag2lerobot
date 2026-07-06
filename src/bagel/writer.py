@@ -9,9 +9,10 @@ The main class ``DatasetWriter`` manages:
   Multiple episodes are appended into the same parquet file until the file
   grows past ``_DATA_FILES_SIZE_IN_MB``; at that point the writer rotates to
   a fresh file index.
-- Size-aggregated per-camera MP4 files, concatenated via ffmpeg's concat
-  demuxer (stream copy, no re-encode) until the file grows past
-  ``_VIDEO_FILES_SIZE_IN_MB``.
+- Size-aggregated per-camera MP4 files: one long-lived ffmpeg encoder per
+  camera streams consecutive episodes directly into the current output mp4;
+  the file rotates once it grows past ``_VIDEO_FILES_SIZE_IN_MB`` (checked at
+  episode boundaries). Every frame is encoded exactly once.
 - Episode metadata parquet files grouped by the data file they belong to.
 - ``meta/info.json``, ``meta/stats.json``, and ``meta/tasks.parquet``.
   In ``tasks.parquet``, task strings are stored as the (unnamed) pandas
@@ -34,13 +35,10 @@ import json
 import logging
 import os
 import queue
-import shutil
 import subprocess
-import tempfile
 import threading
 from collections import defaultdict
 from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +76,7 @@ _TIMESTAMP_ROUND_DECIMALS = 6
 # keep the encoder fed while the main thread is building the next frame.
 _IMAGE_FEED_QUEUE_MAXSIZE = 32
 
-# Timeout (seconds) for waiting on a per-episode ffmpeg encoder to drain.
+# Timeout (seconds) for waiting on an ffmpeg encoder to drain and exit.
 _ENCODER_WAIT_TIMEOUT = 300
 
 # Mapping from ffmpeg encoder name to the LeRobot ``info.json`` ``video.codec``
@@ -255,29 +253,27 @@ class DatasetWriter:
 
         # Size-based chunk/file rotation — per-video-key state.
         #
-        # Per-episode clips are encoded into a staging directory and held
-        # there until their containing output file is finalized. At that
-        # point every clip is concatenated into the target mp4 in a single
-        # PyAV mux pass. This avoids the frame loss that incremental (N-way)
-        # concat exhibits when each new episode re-packs all prior packets.
+        # Each camera owns one long-lived ffmpeg encoder that streams the
+        # frames of consecutive episodes directly into the current target
+        # mp4 (``videos/<key>/chunk-XXX/file-XXX.mp4``). When the file has
+        # grown past ``_VIDEO_FILES_SIZE_IN_MB`` at an episode boundary the
+        # encoder is closed and the next episode starts a fresh file
+        # (lerobot-record semantics). Compared to the previous design
+        # (per-episode staging clips concatenated via an ffmpeg re-encode),
+        # every frame is encoded exactly once and no intermediate clips hit
+        # the disk.
         self._video_chunk_idx: dict[str, int] = {k: 0 for k in self._video_keys}
         self._video_file_idx: dict[str, int] = {k: 0 for k in self._video_keys}
         self._video_file_duration: dict[str, float] = {k: 0.0 for k in self._video_keys}
-        self._video_staging_dir: Path = self.output_dir / ".staging" / "videos"
-        self._video_staged_clips: dict[str, list[Path]] = {
-            k: [] for k in self._video_keys
-        }
-        self._video_staged_bytes: dict[str, int] = {k: 0 for k in self._video_keys}
 
-        # Per-episode streaming encoder state (replaces the previous in-memory
-        # image buffer). Each active camera owns one subprocess.Popen writing
-        # to a staging ``ep_NNNNNN.mp4`` clip, a background feeder thread, and
-        # a bounded queue providing backpressure between add_frame() and the
-        # ffmpeg pipe.
+        # Streaming encoder state. Each active camera owns one
+        # subprocess.Popen writing to the current target mp4, a background
+        # feeder thread, and a bounded queue providing backpressure between
+        # add_frame() and the ffmpeg pipe.
         self._image_encoders: dict[str, subprocess.Popen[bytes]] = {}
         self._image_feeders: dict[str, threading.Thread] = {}
         self._image_feed_queues: dict[str, queue.Queue[bytes | None]] = {}
-        self._image_clip_paths: dict[str, Path] = {}
+        self._video_target_paths: dict[str, Path] = {}
         self._image_shapes: dict[str, tuple[int, int]] = {}
         self._image_last_frame: dict[str, bytes | None] = {
             k: None for k in self._video_keys
@@ -450,15 +446,17 @@ class DatasetWriter:
         else:
             self._data_current_file_bytes = data_path.stat().st_size
 
-        # ---- Close streaming encoders and collect clip paths ----
-        clip_paths: dict[str, Path] = self._close_episode_encoders()
-
+        # ---- Register this episode's video segment per camera ----
+        # Wait for each camera's queued frames to reach ffmpeg (this also
+        # surfaces encoder failures at episode granularity), then record the
+        # segment's (chunk, file, from_ts, to_ts) and rotate the output file
+        # if it has grown past the size threshold.
         video_meta: dict[str, dict[str, Any]] = {}
         for vkey in self._video_keys:
-            if vkey not in clip_paths:
+            if self._image_frame_counts[vkey] == 0:
                 continue
-            vm = self._register_clip_for_vkey(vkey, clip_paths[vkey], ep_len)
-            video_meta[vkey] = vm
+            self._drain_video_queue(vkey)
+            video_meta[vkey] = self._register_episode_video(vkey, ep_len)
 
         # ---- Episode metadata (column order mirrors lerobot-record) ----
         ep_meta: dict[str, Any] = {
@@ -507,33 +505,13 @@ class DatasetWriter:
         if self._episode_frames:
             self.save_episode()
 
-        # Ensure any lingering encoders (should be none in normal flow) are
-        # closed so their staged clips are registered before flushing.
-        if self._image_encoders:
-            stray = self._close_episode_encoders()
-            for vkey, clip_path in stray.items():
-                if clip_path.exists():
-                    # Unknown episode length at this point — re-derive from
-                    # the encoder's counter if we still have it, else 0.
-                    ep_len = self._image_frame_counts.get(vkey, 0)
-                    if ep_len > 0:
-                        self._register_clip_for_vkey(vkey, clip_path, ep_len)
-
         # Close the data parquet writer before reading metadata off disk.
         self._close_data_writer()
 
-        # Materialize any video clips still held in staging. Each camera's
-        # flush involves an independent ffmpeg concat+re-encode subprocess,
-        # so run them concurrently to cut wall time for multi-camera setups.
-        pending_flushes = [
-            vkey for vkey in self._video_keys if self._video_staged_clips[vkey]
-        ]
-        if len(pending_flushes) > 1:
-            with ThreadPoolExecutor(max_workers=len(pending_flushes)) as pool:
-                list(pool.map(self._flush_video_file, pending_flushes))
-        else:
-            for vkey in pending_flushes:
-                self._flush_video_file(vkey)
+        # Finalize every still-open per-camera encoder (in normal flow each
+        # camera has one open unless a size rotation just closed it).
+        for vkey in list(self._image_encoders):
+            self._close_video_encoder(vkey)
 
         self._write_tasks_parquet()
         if self.has_subtasks and self._subtasks:
@@ -543,14 +521,6 @@ class DatasetWriter:
         self._write_stats_json(stats)
         self._write_info_json()
         self._write_conversion_log()
-
-        # Drop the staging directory tree (videos/ subdir + the .staging
-        # parent) once everything has been materialized.
-        if self._video_staging_dir.exists():
-            shutil.rmtree(self._video_staging_dir, ignore_errors=True)
-        staging_parent = self.output_dir / ".staging"
-        if staging_parent.exists():
-            shutil.rmtree(staging_parent, ignore_errors=True)
 
         logger.info(
             "Dataset finalized: %d episodes, %d total frames at %s",
@@ -601,13 +571,6 @@ class DatasetWriter:
             file_idx,
             "parquet",
         )
-
-    def _staging_clip_path(self, vkey: str) -> Path:
-        """Return the next staging clip path for ``vkey`` (``<staging>/vkey/ep_NNNNNN.mp4``)."""
-        staging_dir = self._video_staging_dir / vkey
-        staging_dir.mkdir(parents=True, exist_ok=True)
-        clip_idx = len(self._video_staged_clips[vkey])
-        return staging_dir / f"ep_{clip_idx:06d}.mp4"
 
     # ------------------------------------------------------------------
     # Parquet writing
@@ -883,29 +846,41 @@ class DatasetWriter:
         value: Any,
         feat_spec: dict[str, Any],
     ) -> None:
-        """Feed a single video frame for ``vkey`` into the per-episode encoder.
+        """Feed a single video frame for ``vkey`` into the streaming encoder.
 
         Handles:
 
-        - Lazy encoder startup on the first real image (shape inferred from it).
-          When the first frame is ``None`` but we have a declared shape, we
-          still start the encoder using the declared shape and pad with black.
+        - Lazy encoder startup on the first real image of an output file
+          (shape inferred from it). When the first frame is ``None`` but we
+          have a declared shape, we still start the encoder using the
+          declared shape and pad with black.
+        - RGB uint8 numpy arrays from the decoder fast path (no PIL round
+          trip) as well as PIL Images / other arrays.
         - Zero-order-hold padding from the last image when a frame is missing.
         - Black-frame padding when no image has been seen yet in the episode.
         - Feeding statistics only for real (non-padded) frames.
         """
         if value is not None:
-            img: Image.Image = (
-                value if isinstance(value, Image.Image) else Image.fromarray(value)
-            )
-            width, height = img.size
-            if vkey not in self._image_encoders:
-                clip_path = self._staging_clip_path(vkey)
-                self._image_clip_paths[vkey] = clip_path
-                self._open_encoder(vkey, width, height, clip_path)
-
-            frame_bytes = np.asarray(img.convert("RGB"), dtype=np.uint8).tobytes()
-            self._feed_stats(vkey, np.asarray(img))
+            if (
+                isinstance(value, np.ndarray)
+                and value.dtype == np.uint8
+                and value.ndim == 3
+                and value.shape[2] == 3
+            ):
+                # RGB uint8 array from the decoder fast path.
+                height, width = value.shape[:2]
+                stats_arr: np.ndarray = value
+                frame_bytes = value.tobytes()
+            else:
+                img: Image.Image = (
+                    value if isinstance(value, Image.Image) else Image.fromarray(value)
+                )
+                width, height = img.size
+                rgb = img if img.mode == "RGB" else img.convert("RGB")
+                frame_bytes = np.asarray(rgb, dtype=np.uint8).tobytes()
+                stats_arr = np.asarray(img)
+            self._ensure_encoder(vkey, width, height)
+            self._feed_stats(vkey, stats_arr)
         else:
             # Padding path. Prefer the last real frame bytes; otherwise
             # produce black at the declared shape and start the encoder with
@@ -913,41 +888,57 @@ class DatasetWriter:
             last = self._image_last_frame.get(vkey)
             if last is not None:
                 frame_bytes = last
-                if vkey in self._image_shapes:
-                    width, height = self._image_shapes[vkey]
-                else:
-                    width, height = 640, 480
             else:
                 shape = feat_spec.get("shape", [480, 640, 3])
                 h, w = int(shape[0]), int(shape[1])
                 c = int(shape[2]) if len(shape) >= 3 else 3
                 black = np.zeros((h, w, c), dtype=np.uint8)
                 frame_bytes = black.tobytes()
-                width, height = w, h
-                if vkey not in self._image_encoders:
-                    clip_path = self._staging_clip_path(vkey)
-                    self._image_clip_paths[vkey] = clip_path
-                    self._open_encoder(vkey, width, height, clip_path)
+                self._ensure_encoder(vkey, w, h)
 
         self._image_last_frame[vkey] = frame_bytes
         self._image_feed_queues[vkey].put(frame_bytes)
         self._image_frame_counts[vkey] += 1
+
+    def _ensure_encoder(self, vkey: str, width: int, height: int) -> None:
+        """Open the streaming encoder for ``vkey`` if none is active.
+
+        When an encoder is already open but the incoming episode's frame size
+        differs (checked at episode start only), the current output file is
+        finalized and a fresh file is started at the new size — mixing sizes
+        within one rawvideo stream would corrupt the mp4.
+        """
+        if vkey in self._image_encoders:
+            if (
+                self._image_shapes[vkey] != (width, height)
+                and self._image_frame_counts[vkey] == 0
+            ):
+                self._close_video_encoder(vkey)
+                self._advance_video_file(vkey)
+            else:
+                return
+        target = self._video_path(
+            vkey,
+            self._video_chunk_idx[vkey],
+            self._video_file_idx[vkey],
+        )
+        self._video_target_paths[vkey] = target
+        self._open_encoder(vkey, width, height, target)
 
     def _open_encoder(
         self,
         vkey: str,
         width: int,
         height: int,
-        clip_path: Path,
+        target_path: Path,
     ) -> None:
-        """Start an ffmpeg subprocess + feeder thread for one camera's episode.
+        """Start an ffmpeg subprocess + feeder thread writing ``target_path``.
 
-        The ffmpeg command is identical to the one used by :meth:`_encode_video`
-        and goes through :func:`_build_codec_args`, so the resulting mp4 is
-        bit-for-bit equivalent to the previous buffered path — only the input
-        route changes.
+        The codec arguments go through :func:`_build_codec_args`, matching
+        the historical per-episode encoder; ``+faststart`` keeps the moov
+        atom at the front like the previous concatenated output files.
         """
-        clip_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = [
             "ffmpeg",
             "-y",
@@ -966,7 +957,9 @@ class DatasetWriter:
             *_build_codec_args(self.video_codec, self._ffmpeg_preset, self._ffmpeg_crf),
             "-pix_fmt",
             "yuv420p",
-            str(clip_path),
+            "-movflags",
+            "+faststart",
+            str(target_path),
         ]
 
         try:
@@ -984,21 +977,28 @@ class DatasetWriter:
         q: queue.Queue[bytes | None] = queue.Queue(maxsize=_IMAGE_FEED_QUEUE_MAXSIZE)
 
         def _feeder() -> None:
+            # On a write failure the loop keeps consuming (and task_done-ing)
+            # items so queue.join()/put() in the main thread never deadlock;
+            # the recorded error surfaces via _drain_video_queue / close.
+            failed = False
+            while True:
+                item = q.get()
+                if item is None:
+                    q.task_done()
+                    break
+                if not failed:
+                    try:
+                        assert proc.stdin is not None
+                        proc.stdin.write(item)
+                    except BaseException as exc:  # noqa: BLE001
+                        self._image_feeder_errors[vkey] = exc
+                        failed = True
+                q.task_done()
             try:
-                assert proc.stdin is not None
-                while True:
-                    item = q.get()
-                    if item is None:
-                        break
-                    proc.stdin.write(item)
-            except BaseException as exc:  # noqa: BLE001
-                self._image_feeder_errors[vkey] = exc
-            finally:
-                try:
-                    if proc.stdin is not None and not proc.stdin.closed:
-                        proc.stdin.close()
-                except BrokenPipeError:
-                    pass
+                if proc.stdin is not None and not proc.stdin.closed:
+                    proc.stdin.close()
+            except BrokenPipeError:
+                pass
 
         t = threading.Thread(target=_feeder, name=f"ffmpeg-feeder-{vkey}", daemon=True)
         t.start()
@@ -1008,257 +1008,149 @@ class DatasetWriter:
         self._image_feed_queues[vkey] = q
         self._image_shapes[vkey] = (width, height)
 
-    def _close_episode_encoders(self) -> dict[str, Path]:
-        """Stop all active per-episode encoders and return ``{vkey: clip_path}``.
+    def _drain_video_queue(self, vkey: str) -> None:
+        """Block until every queued frame for ``vkey`` reached ffmpeg's stdin.
 
-        Queues sentinels into every feeder, waits for the ffmpeg processes
-        to exit, and clears all per-episode streaming state.
+        Called at episode boundaries so (a) encoder failures surface with the
+        same per-episode granularity as the previous per-episode encoders and
+        (b) the on-disk size check in :meth:`_register_episode_video` sees an
+        up-to-date file.
         """
-        clip_paths: dict[str, Path] = {}
-        for vkey, q in self._image_feed_queues.items():
-            q.put(None)
+        q = self._image_feed_queues.get(vkey)
+        if q is not None:
+            q.join()
+        err = self._image_feeder_errors.get(vkey)
+        if err is not None:
+            self._raise_encoder_failure(vkey, err)
 
-        for vkey, t in self._image_feeders.items():
-            t.join(timeout=_ENCODER_WAIT_TIMEOUT)
-
-        for vkey, proc in self._image_encoders.items():
+    def _raise_encoder_failure(self, vkey: str, err: BaseException) -> None:
+        """Raise a RuntimeError describing a failed encoder for ``vkey``."""
+        proc = self._image_encoders.get(vkey)
+        if isinstance(err, BrokenPipeError) and proc is not None:
+            # The feeder hit a closed pipe: ffmpeg itself died. Surface its
+            # exit code and stderr instead of the secondary pipe error.
             try:
                 ret = proc.wait(timeout=_ENCODER_WAIT_TIMEOUT)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 ret = proc.wait()
-            if ret != 0:
-                stderr_bytes = b""
-                if proc.stderr is not None:
-                    try:
-                        stderr_bytes = proc.stderr.read() or b""
-                    except Exception:
-                        stderr_bytes = b""
-                logger.error(
-                    "ffmpeg failed for %s (returncode=%d): %s",
-                    vkey,
-                    ret,
-                    stderr_bytes.decode(errors="replace"),
-                )
-                raise RuntimeError(
-                    f"ffmpeg exited with code {ret} for {vkey}: "
-                    f"{stderr_bytes.decode(errors='replace')}"
-                )
+            stderr_bytes = b""
             if proc.stderr is not None:
                 try:
-                    proc.stderr.close()
+                    stderr_bytes = proc.stderr.read() or b""
                 except Exception:
-                    pass
-            err = self._image_feeder_errors.get(vkey)
-            if err is not None and not isinstance(err, BrokenPipeError):
-                raise RuntimeError(f"ffmpeg feeder for {vkey} failed: {err}") from err
-            clip_paths[vkey] = self._image_clip_paths[vkey]
+                    stderr_bytes = b""
+            logger.error(
+                "ffmpeg failed for %s (returncode=%d): %s",
+                vkey,
+                ret,
+                stderr_bytes.decode(errors="replace"),
+            )
+            raise RuntimeError(
+                f"ffmpeg exited with code {ret} for {vkey}: "
+                f"{stderr_bytes.decode(errors='replace')}"
+            ) from err
+        raise RuntimeError(f"ffmpeg feeder for {vkey} failed: {err}") from err
 
-        self._image_encoders.clear()
-        self._image_feeders.clear()
-        self._image_feed_queues.clear()
-        self._image_clip_paths.clear()
-        self._image_shapes.clear()
-        self._image_feeder_errors.clear()
-        return clip_paths
+    def _register_episode_video(self, vkey: str, ep_len: int) -> dict[str, Any]:
+        """Record this episode's segment inside the current output mp4.
 
-    def _register_clip_for_vkey(
-        self,
-        vkey: str,
-        clip_path: Path,
-        ep_len: int,
-    ) -> dict[str, Any]:
-        """Register an already-encoded clip with this episode's video bookkeeping.
-
-        Performs the size-threshold check (flushing staged clips into the
-        current target mp4 if the new clip would overflow
-        ``_VIDEO_FILES_SIZE_IN_MB``), records the clip in staging, and
-        returns this episode's ``(chunk_index, file_index, from_ts, to_ts)``
-        inside whichever output file it will ultimately land in.
+        Returns the episode's ``(chunk_index, file_index, from_ts, to_ts)``
+        and advances the cumulative file duration. Afterwards, if the output
+        file has grown past ``_VIDEO_FILES_SIZE_IN_MB``, the encoder is
+        closed and the (chunk, file) pointer rotates so the next episode
+        starts a fresh file (lerobot-record rotates after exceeding the
+        threshold too).
         """
         # Frame-index driven duration: exact in rational arithmetic, so the
         # round() below only trims the float representation error that would
         # otherwise accumulate across episodes.
         ep_duration = float(ep_len) / self.fps
-        clip_size = clip_path.stat().st_size
-
-        threshold_bytes = _VIDEO_FILES_SIZE_IN_MB * 1024 * 1024
-        if (
-            self._video_staged_clips[vkey]
-            and self._video_staged_bytes[vkey] + clip_size >= threshold_bytes
-        ):
-            self._flush_video_file(vkey)
-
-        self._video_staged_clips[vkey].append(clip_path)
-        self._video_staged_bytes[vkey] += clip_size
-
         from_ts = round(self._video_file_duration[vkey], _TIMESTAMP_ROUND_DECIMALS)
         to_ts = round(from_ts + ep_duration, _TIMESTAMP_ROUND_DECIMALS)
         # Carry the rounded value forward so the *next* ep sees a clean
         # boundary rather than re-introducing the rounding error.
         self._video_file_duration[vkey] = to_ts
 
-        return {
+        meta = {
             "chunk_index": self._video_chunk_idx[vkey],
             "file_index": self._video_file_idx[vkey],
             "from_timestamp": from_ts,
             "to_timestamp": to_ts,
         }
 
-    def _flush_video_file(self, vkey: str) -> None:
-        """Materialize staged clips for ``vkey`` into the current target mp4.
+        target = self._video_target_paths.get(vkey)
+        if target is not None:
+            try:
+                size = target.stat().st_size
+            except FileNotFoundError:
+                size = 0
+            if size >= _VIDEO_FILES_SIZE_IN_MB * 1024 * 1024:
+                self._close_video_encoder(vkey)
+                self._advance_video_file(vkey)
 
-        Runs a single N-way PyAV concat (remux, no re-encode), deletes the
-        staged clips, advances the (chunk_idx, file_idx) pointer to the next
-        slot, and resets ``_video_file_duration`` / staging counters so the
-        next call to :meth:`_save_episode_video` begins a fresh file.
-        """
-        clips = self._video_staged_clips[vkey]
-        if not clips:
-            return
+        return meta
 
-        target_path = self._video_path(
-            vkey,
-            self._video_chunk_idx[vkey],
-            self._video_file_idx[vkey],
-        )
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if len(clips) == 1:
-            shutil.move(str(clips[0]), str(target_path))
-        else:
-            self._concatenate_videos(clips, target_path)
-            for c in clips:
-                if c.exists():
-                    c.unlink()
-
-        # Normalise permissions to rw-rw-rw-. Single-clip moves inherit the
-        # staging clip's 0664; concatenated output comes from a mkstemp temp
-        # file (0600). Both routes converge on 0666 so downstream consumers
-        # (other users / containers) can read the produced mp4.
-        os.chmod(target_path, 0o666)
-
-        # Advance to the next chunk/file slot for subsequent flushes.
+    def _advance_video_file(self, vkey: str) -> None:
+        """Move ``vkey`` to the next (chunk, file) slot and reset its duration."""
         self._video_chunk_idx[vkey], self._video_file_idx[vkey] = _advance_chunk_file(
             self._video_chunk_idx[vkey],
             self._video_file_idx[vkey],
         )
-        self._video_staged_clips[vkey] = []
-        self._video_staged_bytes[vkey] = 0
         self._video_file_duration[vkey] = 0.0
 
-    def _encode_video(self, images: list[Image.Image], output_path: Path) -> None:
-        """Encode a list of PIL Images to an MP4 file using ffmpeg.
+    def _close_video_encoder(self, vkey: str) -> None:
+        """Finalize the current output mp4 for ``vkey``.
 
-        Kept for compatibility with call sites that still buffer a whole
-        episode in memory (tests, ``_concatenate_videos`` sibling paths).
-        Uses the same codec/preset/crf resolution as the streaming encoder
-        path so the output is bit-for-bit equivalent.
+        Queues the feeder sentinel, waits for ffmpeg to drain and exit,
+        checks the exit status and feeder errors, normalises the file
+        permissions to rw-rw-rw- (so other users / containers can read the
+        produced mp4), and clears the per-encoder state so the next frame
+        opens a fresh file.
         """
-        if not images:
+        proc = self._image_encoders.pop(vkey, None)
+        if proc is None:
             return
-
-        width, height = images[0].size
-
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "rawvideo",
-            "-vcodec",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "-s",
-            f"{width}x{height}",
-            "-r",
-            str(self.fps),
-            "-i",
-            "pipe:0",
-            *_build_codec_args(self.video_codec, self._ffmpeg_preset, self._ffmpeg_crf),
-            "-pix_fmt",
-            "yuv420p",
-            str(output_path),
-        ]
+        q = self._image_feed_queues.pop(vkey)
+        q.put(None)
+        t = self._image_feeders.pop(vkey)
+        t.join(timeout=_ENCODER_WAIT_TIMEOUT)
 
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+            ret = proc.wait(timeout=_ENCODER_WAIT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            ret = proc.wait()
+        if ret != 0:
+            stderr_bytes = b""
+            if proc.stderr is not None:
+                try:
+                    stderr_bytes = proc.stderr.read() or b""
+                except Exception:
+                    stderr_bytes = b""
+            logger.error(
+                "ffmpeg failed for %s (returncode=%d): %s",
+                vkey,
+                ret,
+                stderr_bytes.decode(errors="replace"),
             )
-            raw_data = b"".join(
-                np.asarray(img.convert("RGB"), dtype=np.uint8).tobytes()
-                for img in images
-            )
-            _, stderr_bytes = proc.communicate(
-                input=raw_data, timeout=_ENCODER_WAIT_TIMEOUT
-            )
-            if proc.returncode != 0:
-                logger.error("ffmpeg failed: %s", stderr_bytes.decode(errors="replace"))
-                raise RuntimeError(
-                    f"ffmpeg exited with code {proc.returncode}: "
-                    f"{stderr_bytes.decode(errors='replace')}"
-                )
-        except FileNotFoundError as exc:
             raise RuntimeError(
-                "ffmpeg not found. Please install ffmpeg to encode videos."
-            ) from exc
-
-    def _concatenate_videos(self, clips: list[Path], target: Path) -> None:
-        """Concatenate ``clips`` (in order) into ``target`` by re-encoding.
-
-        Uses ffmpeg's ``concat`` filter rather than the concat demuxer with
-        stream copy. Stream-copy concat leaves PTS/DTS and the moov duration
-        inconsistent across segment boundaries, which causes pyav and
-        torchvision decoders (used by LeRobot) to drop frames near the joins
-        and refuse to seek past them. Re-encoding produces a single clean
-        video with monotonic timestamps.
-        """
-        out_fd, out_path = tempfile.mkstemp(suffix=".mp4")
-        os.close(out_fd)
-        try:
-            n = len(clips)
-            cmd: list[str] = [
-                "ffmpeg",
-                "-y",
-                "-nostdin",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-            ]
-            for c in clips:
-                cmd += ["-i", str(Path(c).resolve())]
-            filter_expr = (
-                "".join(f"[{i}:v:0]" for i in range(n)) + f"concat=n={n}:v=1:a=0[outv]"
+                f"ffmpeg exited with code {ret} for {vkey}: "
+                f"{stderr_bytes.decode(errors='replace')}"
             )
-            cmd += [
-                "-filter_complex",
-                filter_expr,
-                "-map",
-                "[outv]",
-                *_build_codec_args(
-                    self.video_codec, self._ffmpeg_preset, self._ffmpeg_crf
-                ),
-                "-pix_fmt",
-                "yuv420p",
-                "-r",
-                str(self.fps),
-                "-movflags",
-                "+faststart",
-                out_path,
-            ]
-            proc = subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL)
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    f"ffmpeg concat-filter failed ({proc.returncode}): "
-                    f"{proc.stderr.decode(errors='replace')}"
-                )
-            shutil.move(out_path, str(target))
-        finally:
-            if os.path.exists(out_path):
-                os.unlink(out_path)
+        if proc.stderr is not None:
+            try:
+                proc.stderr.close()
+            except Exception:
+                pass
+        err = self._image_feeder_errors.pop(vkey, None)
+        if err is not None and not isinstance(err, BrokenPipeError):
+            raise RuntimeError(f"ffmpeg feeder for {vkey} failed: {err}") from err
+
+        self._image_shapes.pop(vkey, None)
+        target = self._video_target_paths.pop(vkey, None)
+        if target is not None and target.exists():
+            os.chmod(target, 0o666)
 
     # ------------------------------------------------------------------
     # Metadata JSON

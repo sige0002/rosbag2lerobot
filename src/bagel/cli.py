@@ -63,7 +63,7 @@ import click
 if TYPE_CHECKING:
     from bagel.diagnostics import ValidationReport
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 from bagel import __version__ as _BAGEL_VERSION
 from bagel.bagconvert import (
@@ -79,7 +79,7 @@ from bagel.config import (
     FeatureMapping,
     ResamplingConfig,
 )
-from bagel.decoders import decode
+from bagel.decoders import decode, decode_array
 from bagel.jobmeta import EpisodeResult, JobSummary, dir_bytes
 from bagel.manifest import ManifestInput, ffmpeg_version, sha256_of_path
 from bagel.reader import BagReader, discover_bags, extract_header_stamp_ns
@@ -413,7 +413,13 @@ def convert(
     # writes meta/conversion_log.json inside finalize(), by which point the
     # generator has been fully drained and the list is complete + index-sorted.
     job_summary = JobSummary()
-    bag_sha256 = {bp: sha256_of_path(bp) for bp in bag_paths}
+    # Hash the input bags on background threads so the (potentially large)
+    # sequential read overlaps with the conversion itself instead of delaying
+    # its start. Each future is resolved in _on_episode_done, by which point
+    # the hash has usually finished; hashing errors surface there (previously
+    # they surfaced before conversion started).
+    sha_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="bag-sha256")
+    bag_sha256_futures = {bp: sha_pool.submit(sha256_of_path, bp) for bp in bag_paths}
     manifest_inputs: list[dict[str, Any]] = []
     progress = _make_progress(len(bag_paths), disable=quiet or json_summary)
 
@@ -445,10 +451,11 @@ def convert(
     def _on_episode_done(result: EpisodeResult) -> None:
         job_summary.add(result)
         if result.success:
+            sha_future = bag_sha256_futures.get(Path(result.bag_path))
             manifest_inputs.append(
                 ManifestInput(
                     path=result.bag_path,
-                    sha256=bag_sha256.get(Path(result.bag_path), ""),
+                    sha256=sha_future.result() if sha_future is not None else "",
                     frame_count=result.n_frames,
                     processing_time_s=result.processing_time_s,
                 ).to_dict()
@@ -521,6 +528,9 @@ def convert(
         )
         _store_episode_summary(all_episodes, output_dir)
     finally:
+        # Skipped/failed episodes never resolve their hash future; drop those
+        # instead of blocking on them.
+        sha_pool.shutdown(wait=False, cancel_futures=True)
         if progress is not None:
             progress.close()
 
@@ -558,6 +568,46 @@ def _build_decoder_config(fm: FeatureMapping) -> dict[str, Any]:
     if fm.unit_conversion != 1.0:
         cfg["unit_conversion"] = fm.unit_conversion
     return cfg
+
+
+class _LazyImage:
+    """Deferred image decode for the resampling pipeline.
+
+    Image topics typically run faster than the target FPS, so most camera
+    messages are never picked by the resampler. Wrapping the raw message in
+    this thin holder lets :func:`_process_episode` postpone the expensive
+    JPEG/raw decode until after resample + trim, when only the frames that
+    actually survive are materialized. The same instance may be shared by
+    several frames (hold policy); the decode runs once and the result is
+    shared, exactly like the previous eager path.
+    """
+
+    __slots__ = ("_msg", "_msg_type", "_selector", "_config", "_value")
+
+    def __init__(
+        self,
+        msg_type: str,
+        msg: object,
+        selector: list[str] | None,
+        config: dict[str, Any],
+    ) -> None:
+        self._msg_type = msg_type
+        self._msg = msg
+        self._selector = selector
+        self._config = config
+        self._value = None
+
+    def materialize(self) -> object:
+        """Decode the wrapped message (once) and return the image value."""
+        if self._msg is not None:
+            self._value = decode_array(
+                msg_type=self._msg_type,
+                deserialized_msg=self._msg,
+                selector=self._selector,
+                config=self._config,
+            )
+            self._msg = None  # release the raw message buffer
+        return self._value
 
 
 def _process_bag_entry(
@@ -1040,6 +1090,25 @@ def _process_episode(
                     else recv_ns
                 )
 
+                # Image features are decoded lazily: most camera messages are
+                # never picked by the resampler (topic rate > target fps), so
+                # the expensive decode is deferred until after resample+trim
+                # (see the materialization pass below).
+                if fm.is_image:
+                    messages.append(
+                        (
+                            fm.key,
+                            ts,
+                            _LazyImage(
+                                fm.msg_type,
+                                raw_msg,
+                                _split_selector(fm.selector),
+                                _build_decoder_config(fm),
+                            ),
+                        )
+                    )
+                    continue
+
                 decoded_value = decode(
                     msg_type=fm.msg_type,
                     deserialized_msg=raw_msg,
@@ -1127,6 +1196,17 @@ def _process_episode(
                 "required features had no valid frames. Required keys: %s",
                 required_keys,
             )
+
+    # Materialize lazily-decoded images for the surviving frames only. A
+    # shared _LazyImage (hold policy) decodes once; frames dropped by the
+    # resample window / trim are never decoded at all.
+    image_keys = [fm.key for fm in cfg.observations + cfg.actions if fm.is_image]
+    if image_keys and frames:
+        for frame in frames:
+            for k in image_keys:
+                v = frame.get(k)
+                if type(v) is _LazyImage:
+                    frame[k] = v.materialize()
 
     return frames
 

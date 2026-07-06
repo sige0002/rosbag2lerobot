@@ -286,12 +286,12 @@ class TestDatasetWriterWithVideo:
 
 
 class TestVideoFilePermissions:
-    """The produced mp4 must be world rw (0o666) on both write paths.
+    """The produced mp4 must be world rw (0o666).
 
-    Single-clip episodes are finalized via ``shutil.move`` (inherits the
-    staging clip's 0664); multi-clip files go through ``_concatenate_videos``
-    which writes to a ``mkstemp`` temp file (0600). Both must converge on
-    0666 so other users / containers can read the dataset.
+    The streaming encoder writes the target mp4 directly (0644/0664 per
+    umask); ``_close_video_encoder`` must normalise it to 0666 so other
+    users / containers can read the dataset. Covered for both a single-
+    episode file and a file aggregating multiple episodes.
     """
 
     @pytest.fixture(autouse=True)
@@ -307,10 +307,10 @@ class TestVideoFilePermissions:
 
         return stat.S_IMODE(path.stat().st_mode)
 
-    def test_single_clip_route_is_0666(
+    def test_single_episode_file_is_0666(
         self, tmp_path: Path, features_with_video: dict
     ) -> None:
-        """One episode → one staged clip → shutil.move path."""
+        """One episode → one output mp4."""
         writer = DatasetWriter(
             tmp_path, {"robot_type": "r"}, features_with_video, fps=10
         )
@@ -336,10 +336,10 @@ class TestVideoFilePermissions:
         assert video_path.exists()
         assert self._mode(video_path) == 0o666
 
-    def test_concat_route_is_0666(
+    def test_multi_episode_aggregated_file_is_0666(
         self, tmp_path: Path, features_with_video: dict
     ) -> None:
-        """Multiple episodes aggregated into one file → _concatenate_videos path."""
+        """Multiple episodes streamed into one aggregated output file."""
         writer = DatasetWriter(
             tmp_path, {"robot_type": "r"}, features_with_video, fps=10
         )
@@ -359,7 +359,7 @@ class TestVideoFilePermissions:
         writer.finalize()
 
         # All three episodes are far below the size threshold, so they land in
-        # a single file-000.mp4 produced by the concat (multi-clip) path.
+        # a single file-000.mp4 written by one continuous encoder.
         chunk_dir = tmp_path / "videos" / "observation.images.cam" / "chunk-000"
         mp4s = sorted(chunk_dir.glob("*.mp4"))
         assert [p.name for p in mp4s] == ["file-000.mp4"]
@@ -564,17 +564,6 @@ class TestTimestampRoundingAcrossEpisodes:
     rounded to microsecond precision and the cumulative offset does not drift
     due to float accumulation across many episodes."""
 
-    def _stage_dummy_clip(self, writer: DatasetWriter, vkey: str) -> Path:
-        """Create a tiny on-disk "clip" file so stat().st_size works.
-
-        _register_clip_for_vkey only inspects the file size, so a few
-        arbitrary bytes are sufficient. This lets us exercise the timestamp
-        arithmetic in isolation without invoking ffmpeg.
-        """
-        clip_path = writer._staging_clip_path(vkey)
-        clip_path.write_bytes(b"\x00" * 16)
-        return clip_path
-
     def test_timestamp_rounded_at_microsecond_precision_over_50_episodes(
         self, tmp_path: Path, features_with_video: dict
     ) -> None:
@@ -597,9 +586,11 @@ class TestTimestampRoundingAcrossEpisodes:
         from_ts_values: list[float] = []
         to_ts_values: list[float] = []
 
+        # ``_register_episode_video`` performs the timestamp arithmetic in
+        # isolation (no encoder is open, so no ffmpeg invocation and no size
+        # rotation happens here).
         for _ in range(50):
-            clip_path = self._stage_dummy_clip(writer, vkey)
-            meta = writer._register_clip_for_vkey(vkey, clip_path, ep_len)
+            meta = writer._register_episode_video(vkey, ep_len)
             from_ts_values.append(meta["from_timestamp"])
             to_ts_values.append(meta["to_timestamp"])
 

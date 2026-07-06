@@ -9,6 +9,11 @@ Compressed images are decoded using OpenCV for JPEG/PNG and fall back to
 PIL for other formats.  ``compressedDepth`` (RVL 圧縮の 16bit 深度) は専用の
 純 Python デコーダ（``_decode_rvl``）で復号し、8bit グレースケールへ正規化して
 動画特徴として保存する。
+
+変換パイプライン（CLI → writer）は PIL を介さない numpy 配列版デコーダ
+（``@register_array_decoder`` で登録、``decoders.decode_array`` から dispatch）
+を使う。公開デコーダ（``decode()`` 経由）は従来どおり PIL Image を返す薄い
+ラッパで、画素値は配列版と完全に一致する。
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from bagel.decoders import register_decoder
+from bagel.decoders import register_array_decoder, register_decoder
 
 logger = logging.getLogger(__name__)
 
@@ -41,27 +46,41 @@ _ENCODING_INFO: dict[str, tuple[int, np.dtype]] = {
 }
 
 
-def _resize_if_needed(img: Image.Image, config: dict[str, Any]) -> Image.Image:
-    """Resize image to target size if specified in config.
+def _as_uint8_buffer(data: Any) -> np.ndarray:
+    """Return *data* as a 1-D ``uint8`` numpy view without copying.
+
+    rosbags deserializes ``uint8[]`` fields to numpy arrays already; plain
+    ``bytes`` (tests, other producers) are wrapped via ``frombuffer``.
+    """
+    if isinstance(data, np.ndarray):
+        return data
+    return np.frombuffer(data, dtype=np.uint8)
+
+
+def _resize_array_if_needed(arr: np.ndarray, config: dict[str, Any]) -> np.ndarray:
+    """Resize an RGB array to the target size if specified in config.
 
     Config key: "image_size" as [height, width] or (height, width).
+    Uses PIL LANCZOS so the resized pixels are identical to the historical
+    PIL-based path.
     """
     image_size = config.get("image_size")
     if image_size is None:
-        return img
+        return arr
     target_h, target_w = int(image_size[0]), int(image_size[1])
-    if img.size == (target_w, target_h):
-        return img
-    return img.resize((target_w, target_h), Image.LANCZOS)
+    if arr.shape[0] == target_h and arr.shape[1] == target_w:
+        return arr
+    img = Image.fromarray(arr, mode="RGB")
+    return np.asarray(img.resize((target_w, target_h), Image.LANCZOS))
 
 
-@register_decoder("sensor_msgs/msg/Image")
-def decode_image(
+def decode_image_array(
     msg: Any, selector: list[str] | None, config: dict[str, Any]
-) -> Image.Image:
-    """Decode a raw ROS2 Image message to a PIL RGB Image.
+) -> np.ndarray:
+    """Decode a raw ROS2 Image message to an RGB ``uint8`` array ``(H, W, 3)``.
 
-    Supports encodings: rgb8, bgr8, rgba8, bgra8, mono8, 8UC1, 8UC3, 8UC4.
+    Supports encodings: rgb8, bgr8, rgba8, bgra8, mono8, 8UC1, 8UC3, 8UC4,
+    16UC1, mono16, 32FC1.
 
     Args:
         msg: Deserialized sensor_msgs/msg/Image with attributes:
@@ -70,7 +89,7 @@ def decode_image(
         config: May contain "image_size" as [height, width].
 
     Returns:
-        PIL.Image.Image in RGB mode.
+        ``np.ndarray`` of shape ``(H, W, 3)``, dtype ``uint8``, RGB order.
     """
     encoding = msg.encoding.lower() if hasattr(msg, "encoding") else "rgb8"
     # Normalize encoding lookup (case-sensitive for UC types)
@@ -86,8 +105,8 @@ def decode_image(
     height = int(msg.height)
     width = int(msg.width)
 
-    # Convert raw bytes to numpy array
-    raw = np.frombuffer(bytes(msg.data), dtype=dtype)
+    # View raw bytes as a numpy array (no copy)
+    raw = np.frombuffer(_as_uint8_buffer(msg.data), dtype=dtype)
 
     if channels == 1:
         img_array = raw.reshape((height, width))
@@ -120,8 +139,22 @@ def decode_image(
         img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
     # else: rgb8 is already RGB
 
-    pil_img = Image.fromarray(img_array, mode="RGB")
-    return _resize_if_needed(pil_img, config)
+    return _resize_array_if_needed(img_array, config)
+
+
+@register_decoder("sensor_msgs/msg/Image")
+def decode_image(
+    msg: Any, selector: list[str] | None, config: dict[str, Any]
+) -> Image.Image:
+    """Decode a raw ROS2 Image message to a PIL RGB Image.
+
+    Thin PIL wrapper around :func:`decode_image_array`; see there for the
+    supported encodings and config keys.
+
+    Returns:
+        PIL.Image.Image in RGB mode.
+    """
+    return Image.fromarray(decode_image_array(msg, selector, config), mode="RGB")
 
 
 def _decode_rvl(buf: bytes, rows: int, cols: int) -> np.ndarray:
@@ -234,11 +267,10 @@ def _depth16_to_rgb(depth: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
 
 
-@register_decoder("sensor_msgs/msg/CompressedImage")
-def decode_compressed_image(
+def decode_compressed_image_array(
     msg: Any, selector: list[str] | None, config: dict[str, Any]
-) -> Image.Image:
-    """Decode a compressed ROS2 Image message (JPEG/PNG) to a PIL RGB Image.
+) -> np.ndarray:
+    """Decode a compressed ROS2 Image message (JPEG/PNG) to an RGB array.
 
     Args:
         msg: Deserialized sensor_msgs/msg/CompressedImage with attributes:
@@ -247,40 +279,60 @@ def decode_compressed_image(
         config: May contain "image_size" as [height, width].
 
     Returns:
-        PIL.Image.Image in RGB mode.
+        ``np.ndarray`` of shape ``(H, W, 3)``, dtype ``uint8``, RGB order.
     """
     fmt = msg.format.lower() if hasattr(msg, "format") else ""
 
-    raw_data = bytes(msg.data)
-
     if "compresseddepth" in fmt:
-        depth = _decode_compressed_depth(raw_data, fmt)
+        raw = msg.data
+        raw_bytes = raw.tobytes() if isinstance(raw, np.ndarray) else bytes(raw)
+        depth = _decode_compressed_depth(raw_bytes, fmt)
         img_array = _depth16_to_rgb(depth)
-        pil_img = Image.fromarray(img_array, mode="RGB")
     elif "jpeg" in fmt or "jpg" in fmt:
         # Use OpenCV for JPEG decompression (handles more edge cases)
-        buf = np.frombuffer(raw_data, dtype=np.uint8)
+        buf = _as_uint8_buffer(msg.data)
         img_array = cv2.imdecode(buf, cv2.IMREAD_COLOR)
         if img_array is None:
             raise ValueError("Failed to decode JPEG compressed image")
         # OpenCV decodes to BGR
         img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(img_array, mode="RGB")
     elif "png" in fmt:
-        buf = np.frombuffer(raw_data, dtype=np.uint8)
+        buf = _as_uint8_buffer(msg.data)
         img_array = cv2.imdecode(buf, cv2.IMREAD_COLOR)
         if img_array is None:
             raise ValueError("Failed to decode PNG compressed image")
         img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(img_array, mode="RGB")
     else:
         # Fallback: try PIL directly
+        raw = msg.data
+        raw_bytes = raw.tobytes() if isinstance(raw, np.ndarray) else bytes(raw)
         try:
-            pil_img = Image.open(io.BytesIO(raw_data))
-            pil_img = pil_img.convert("RGB")
+            pil_img = Image.open(io.BytesIO(raw_bytes))
+            img_array = np.asarray(pil_img.convert("RGB"))
         except Exception as exc:
             raise ValueError(
                 f"Cannot decode compressed image with format {msg.format!r}: {exc}"
             ) from exc
 
-    return _resize_if_needed(pil_img, config)
+    return _resize_array_if_needed(img_array, config)
+
+
+@register_decoder("sensor_msgs/msg/CompressedImage")
+def decode_compressed_image(
+    msg: Any, selector: list[str] | None, config: dict[str, Any]
+) -> Image.Image:
+    """Decode a compressed ROS2 Image message (JPEG/PNG) to a PIL RGB Image.
+
+    Thin PIL wrapper around :func:`decode_compressed_image_array`.
+
+    Returns:
+        PIL.Image.Image in RGB mode.
+    """
+    return Image.fromarray(
+        decode_compressed_image_array(msg, selector, config), mode="RGB"
+    )
+
+
+# Register the array fast path for the conversion pipeline (CLI → writer).
+register_array_decoder("sensor_msgs/msg/Image")(decode_image_array)
+register_array_decoder("sensor_msgs/msg/CompressedImage")(decode_compressed_image_array)

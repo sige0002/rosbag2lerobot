@@ -59,7 +59,7 @@ CLI エントリ (`cli.py::convert`) が各 bag についてこのパイプラ�
 | `reader.py` | `rosbags.rosbag2.Reader` をラップ。カスタム `.msg` を登録した後、bag に埋め込まれた msgdef で上書きして CDR デシリアライズがワイヤフォーマットと必ず一致するようにする。 |
 | `decoders/` | `msg_type → callable` のレジストリ。標準型（sensor_msgs / geometry_msgs / nav_msgs / std_msgs）には手書きデコーダ、未登録型には `msg_parser.MsgDecoder` が汎用的に数値を抽出するフォールバック。 |
 | `resampler.py` | `(key, ts_ns, value)` タプル列を固定 FPS フレーム列に変換。`hold` / `nearest` / `drop` の3ポリシー。`trim_to_valid_range` で required 特徴量のそろう区間に切り詰め。 |
-| `writer.py` | LeRobot 特徴量スキーマを構築し、エピソード単位でフレームをバッファし、`ffmpeg` で動画をエンコード、parquet / MP4 / `info.json` / `stats.json` / `tasks.parquet` / `episodes/` を出力。 |
+| `writer.py` | LeRobot 特徴量スキーマを構築し、フレームをカメラごとの常駐 `ffmpeg` エンコーダにストリーミング（各フレームを 1 回だけエンコード、200MB 到達でファイルをローテーション）、parquet / MP4 / `info.json` / `stats.json` / `tasks.parquet` / `episodes/` を出力。 |
 | `stats.py` | Welford のオンラインアルゴリズムで min / max / mean / std / 分位数を算出し `meta/stats.json` に書き出す。 |
 | `diagnostics.py` | 診断系の純関数群。`compute_topic_fps_report`（F1: トピック周期統計）、`detect_image_shape` / `_normalize_yaml_image_size`（F3: 画像 shape 検出）、`validate_config_against_bag` + `ValidationReport`（F4: config ↔ bag 整合検証）。CLI からも CI スクリプトからも直接呼べる。 |
 | `audit.py` | 生成済みデータセット側の監査純関数群（F2）。`audit_episode_timestamps` が `meta/episodes/*.parquet` を走査し、`to_timestamp[i] == from_timestamp[i+1]` と mp4 境界のリセット規則を検証。結果は `AuditReport` / `VideoKeyAuditResult` / `BoundaryError` で構造化。 |
@@ -189,7 +189,10 @@ finalize()
 
 ### 動画エンコード
 
-`VideoEncoder` が生 RGB を `ffmpeg -f rawvideo ... -c:v <codec>` にパイプします。代表的なデフォルト:
+カメラごとに常駐する `ffmpeg` エンコーダ（`ffmpeg -f rawvideo ... -c:v <codec>`）へ
+生 RGB をパイプします。連続するエピソードは同じ出力 mp4 にストリーミングされ、
+ファイルサイズが `video_files_size_in_mb` を超えたエピソード境界でローテーション
+します（各フレームのエンコードは 1 回のみ）。代表的なデフォルト:
 
 - libsvtav1: `-preset 8 -crf 30`
 - H.264 / HEVC NVENC: `-preset p4`
@@ -256,6 +259,8 @@ with BagReader(bag_path, cfg) as reader:
                 continue
             # (A) 採用ts: stamp_source=header かつ header あり → header_ns、それ以外 recv_ns
             ts = header_ns if (fm.stamp_source == "header" and header_ns is not None) else recv_ns
+            # 画像は _LazyImage で遅延デコード（リサンプルで採用されたフレームのみ
+            # 後段で materialize）。それ以外は即時 decode。
             decoded = decode(fm.msg_type, raw,
                              _split_selector(fm.selector),
                              _build_decoder_config(fm))

@@ -4,7 +4,7 @@ These tests pin the behaviour of the three fixes landed for the topic-alignment
 work and run against a *real* bag from ``bagdata/``:
 
   1. Generated mp4 permissions are 0o666 (rw-rw-rw-), including the
-     multi-episode concatenated-mp4 path that previously produced 0o600.
+     multi-episode aggregated-mp4 path that previously produced 0o600.
   2. ``align_to_required`` (ResamplingConfig, default True) clips the output
      frame grid to the intersection of the required features' time spans, so
      toggling it True/False changes episode length (True <= False, and
@@ -24,7 +24,7 @@ Real-data pairing (established in Wave 1, verified in Wave 2):
             larger required-window delta makes the align effect unambiguous.
 The multi-episode case reuses the bag directory's *parent*
 (bagdata/airoa-moma-mcap/) with --max-episodes to force >1 episode into a
-single concatenated mp4.
+single aggregated mp4.
 
 Measured Wave 2 reference values (fps=10), for context:
   - 235210: align True/False (trim on) -> 97 / 98 frames; max_stamp_delay_ms=50
@@ -130,8 +130,8 @@ def _convert_inproc(
     the RobotConfig is passed directly; the writer derives the feature spec and
     fps internally. Forces CPU encoding (libx264) for reproducibility. Writing
     the same bag ``n_episodes`` times yields ``n_episodes`` episodes that the
-    writer concatenates into a single mp4 per camera (the multi-clip concat
-    path) — exactly the 0o600-regression surface.
+    writer aggregates into a single mp4 per camera — exactly the
+    0o600-regression surface.
     """
     from bagel.writer import write_dataset
 
@@ -162,7 +162,7 @@ def _info(dataset_dir: Path) -> dict[str, Any]:
 
 
 # ===========================================================================
-# Fix 1 — mp4 permissions are 0o666 (incl. multi-episode concat path)
+# Fix 1 — mp4 permissions are 0o666 (incl. multi-episode aggregated path)
 # ===========================================================================
 
 
@@ -182,13 +182,13 @@ class TestVideoPermissions:
                 f"{f} mode={oct(_mode_octal(f))}, expected 0o666"
             )
 
-    def test_multi_episode_concat_mp4_is_0o666(self, tmp_path: Path) -> None:
-        """Multiple episodes that concatenate into a single mp4 must also be 0o666.
+    def test_multi_episode_aggregated_mp4_is_0o666(self, tmp_path: Path) -> None:
+        """Multiple episodes aggregated into a single mp4 must also be 0o666.
 
-        Regression for the bug where the concat path (mkstemp temp file ->
+        Historical regression: the old concat path (mkstemp temp file ->
         ffmpeg concat filter -> shutil.move) left the merged mp4 at 0o600.
         Three episodes (well under the per-file size threshold) land in one
-        concatenated mp4 per camera, driving _concatenate_videos + the chmod.
+        aggregated mp4 per camera, driving _close_video_encoder + the chmod.
         """
         _require(HSR_BAG)
         out = _convert_inproc(
@@ -197,17 +197,17 @@ class TestVideoPermissions:
 
         info = _info(out)
         assert info["total_episodes"] >= 2, (
-            f"expected >=2 episodes to exercise concat, got {info['total_episodes']}"
+            f"expected >=2 episodes to exercise aggregation, got {info['total_episodes']}"
         )
 
         mp4s = _all_mp4s(out)
         assert mp4s, f"no mp4 produced under {out}"
-        # Each camera should have collapsed its 3 episode clips into ONE file
-        # (the concat path), not one-file-per-episode.
+        # Each camera should have streamed its 3 episodes into ONE file,
+        # not one-file-per-episode.
         for cam_dir in (out / "videos").iterdir():
             cam_mp4s = list(cam_dir.rglob("*.mp4"))
             assert len(cam_mp4s) == 1, (
-                f"{cam_dir.name}: expected a single concatenated mp4, got {len(cam_mp4s)}"
+                f"{cam_dir.name}: expected a single aggregated mp4, got {len(cam_mp4s)}"
             )
         for f in mp4s:
             assert _mode_octal(f) == 0o666, (
@@ -226,22 +226,23 @@ class TestFfmpegNoStdin:
 
     The interactive TTY-corruption symptom cannot be reliably reproduced in a
     non-interactive agent/CI environment, so this is split into:
-      (a) a static check that the concat ffmpeg call passes -nostdin and pins
-          stdin to DEVNULL (the streaming encoder feeds frames via PIPE and so
-          never inherits the TTY; the NVENC-probe in cli.py is likewise
+      (a) a static check that every ffmpeg invocation pins stdin explicitly
+          (the writer's streaming encoder feeds frames via stdin=PIPE and so
+          never inherits the TTY; the NVENC-probe in cli.py is
           -nostdin + DEVNULL),
       (b) a smoke conversion that must complete cleanly.
     Final confirmation that the terminal stays usable after a real
     ``bagel convert`` is left to the user (see the Wave 2 runbook).
     """
 
-    def test_ffmpeg_concat_passes_nostdin_and_devnull(self) -> None:
-        """Static source check on writer.py's concat ffmpeg call + cli probe."""
+    def test_ffmpeg_calls_pin_stdin_away_from_tty(self) -> None:
+        """Static source check on writer.py's encoder ffmpeg call + cli probe."""
         writer_src = (PROJECT_ROOT / "src" / "bagel" / "writer.py").read_text()
         cli_src = (PROJECT_ROOT / "src" / "bagel" / "cli.py").read_text()
-        assert "-nostdin" in writer_src, "writer.py concat ffmpeg should pass -nostdin"
-        assert "stdin=subprocess.DEVNULL" in writer_src, (
-            "writer.py concat subprocess should set stdin=subprocess.DEVNULL"
+        # The writer's only ffmpeg invocation is the streaming encoder, whose
+        # stdin is the frame pipe (never the TTY).
+        assert "stdin=subprocess.PIPE" in writer_src, (
+            "writer.py encoder subprocess should set stdin=subprocess.PIPE"
         )
         # The ffmpeg -encoders probe in cli.py must also not grab the TTY.
         assert "-nostdin" in cli_src and "stdin=subprocess.DEVNULL" in cli_src, (

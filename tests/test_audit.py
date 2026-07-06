@@ -59,13 +59,6 @@ def features_with_video() -> dict:
     }
 
 
-def _stage_dummy_clip(writer: DatasetWriter, vkey: str) -> Path:
-    """Write a zero-length-ish staging clip so ``stat().st_size`` works."""
-    clip_path = writer._staging_clip_path(vkey)
-    clip_path.write_bytes(b"\x00" * 16)
-    return clip_path
-
-
 def _build_episodes_parquet(
     tmp_path: Path,
     features_with_video: dict,
@@ -79,7 +72,7 @@ def _build_episodes_parquet(
     pass it straight to :func:`audit_episode_timestamps`.
 
     Rather than invoking ffmpeg we emulate the writer's internal
-    "register a clip" path (the same one exercised by
+    "register an episode segment" path (the same one exercised by
     ``TestTimestampRoundingAcrossEpisodes``) and then write the episodes
     parquet manually via the writer's private helper. This keeps the test
     fast and deterministic while covering the exact arithmetic that
@@ -94,8 +87,7 @@ def _build_episodes_parquet(
     vkey = "observation.images.cam"
 
     for ep_idx in range(n_episodes):
-        clip_path = _stage_dummy_clip(writer, vkey)
-        vm = writer._register_clip_for_vkey(vkey, clip_path, ep_len)
+        vm = writer._register_episode_video(vkey, ep_len)
 
         ep_meta = {
             "episode_index": ep_idx,

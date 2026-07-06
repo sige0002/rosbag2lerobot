@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 # Global registry: msg_type string -> decoder function
 _DECODER_REGISTRY: dict[str, Callable] = {}
 
+# Parallel registry for array-returning image decoders (conversion fast path).
+# Functions here return ``np.ndarray`` (H, W, 3) uint8 instead of PIL Images,
+# letting the CLI/writer pipeline skip the PIL round trip. Pixel values are
+# identical to the PIL decoders in ``_DECODER_REGISTRY``.
+_ARRAY_DECODER_REGISTRY: dict[str, Callable] = {}
+
 
 def register_decoder(msg_type: str) -> Callable:
     """Decorator to register a decoder function for a given ROS2 message type.
@@ -55,6 +61,21 @@ def register_decoder(msg_type: str) -> Callable:
                 func.__qualname__,
             )
         _DECODER_REGISTRY[msg_type] = func
+        return func
+
+    return decorator
+
+
+def register_array_decoder(msg_type: str) -> Callable:
+    """Decorator to register an array-returning decoder for *msg_type*.
+
+    Array decoders share the ``(msg, selector, config)`` signature with
+    regular decoders but return an RGB ``np.ndarray`` instead of a PIL
+    Image. They are dispatched via :func:`decode_array`.
+    """
+
+    def decorator(func: Callable) -> Callable:
+        _ARRAY_DECODER_REGISTRY[msg_type] = func
         return func
 
     return decorator
@@ -143,6 +164,37 @@ def decode(
         f"No decoder registered for message type {msg_type!r} "
         f"and no .msg file found for fallback parsing."
     )
+
+
+def decode_array(
+    msg_type: str,
+    deserialized_msg: Any,
+    selector: list[str] | None = None,
+    config: dict[str, Any] | None = None,
+) -> np.ndarray | Image.Image:
+    """Decode an image message, preferring the array fast path.
+
+    For message types with a registered array decoder this skips the PIL
+    round trip and returns an RGB ``np.ndarray`` (H, W, 3) uint8 whose pixel
+    values are identical to :func:`decode`'s PIL output. Other message types
+    fall back to :func:`decode` unchanged (which may return a PIL Image).
+
+    Args:
+        msg_type: ROS2 message type string.
+        deserialized_msg: Deserialized rosbags message object.
+        selector: Optional list of field selectors for extraction.
+        config: Optional configuration dict (e.g. "image_size").
+
+    Returns:
+        ``np.ndarray`` (fast path) or whatever :func:`decode` returns.
+    """
+    if config is None:
+        config = {}
+    if not config.get("decoder"):
+        array_decoder = _ARRAY_DECODER_REGISTRY.get(msg_type)
+        if array_decoder is not None:
+            return array_decoder(deserialized_msg, selector, config)
+    return decode(msg_type, deserialized_msg, selector, config)
 
 
 # Import built-in decoders to trigger registration on module load
