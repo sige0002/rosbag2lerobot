@@ -88,3 +88,45 @@ class TestDecodeJointStateBracket:
 
         with pytest.raises(ValueError, match="index 99"):
             decode_joint_state(self._make(), ["position[99]"], {})
+
+
+class TestMsgDecoderBracketSelector:
+    """Bracket notation on the generic ``.msg`` decoder path.
+
+    Custom types without a built-in decoder (e.g.
+    ``rm_ros_interface/msg/RmPlusState`` with a ``pos`` array) go through
+    ``MsgDecoder._get_nested_value``, which must accept ``pos[0]`` identically
+    to the built-in decoders while keeping the legacy ``pos.0`` dot form.
+    """
+
+    def _make(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            pos=[10.0, 20.0, 30.0],
+            state=SimpleNamespace(pos=[1.0, 2.0, 3.0]),
+        )
+
+    def test_bracket_index(self) -> None:
+        from rosbag2lerobot.decoders.msg_parser import MsgDecoder
+
+        assert MsgDecoder._get_nested_value(self._make(), "pos[0]") == 10.0
+        assert MsgDecoder._get_nested_value(self._make(), "pos[2]") == 30.0
+
+    def test_bracket_negative(self) -> None:
+        from rosbag2lerobot.decoders.msg_parser import MsgDecoder
+
+        assert MsgDecoder._get_nested_value(self._make(), "pos[-1]") == 30.0
+
+    def test_dot_index_still_works(self) -> None:
+        from rosbag2lerobot.decoders.msg_parser import MsgDecoder
+
+        assert MsgDecoder._get_nested_value(self._make(), "pos.0") == 10.0
+
+    def test_whole_field_unchanged(self) -> None:
+        from rosbag2lerobot.decoders.msg_parser import MsgDecoder
+
+        assert MsgDecoder._get_nested_value(self._make(), "pos") == [10.0, 20.0, 30.0]
+
+    def test_nested_then_bracket(self) -> None:
+        from rosbag2lerobot.decoders.msg_parser import MsgDecoder
+
+        assert MsgDecoder._get_nested_value(self._make(), "state.pos[1]") == 2.0

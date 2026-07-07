@@ -26,6 +26,8 @@ from typing import Any
 
 import numpy as np
 
+from rosbag2lerobot.decoders.builtin import _parse_array_selector
+
 logger = logging.getLogger(__name__)
 
 # ROS2 primitive types and their numpy equivalents
@@ -361,12 +363,24 @@ class MsgDecoder:
         Supports paths like:
             "field_name"
             "nested.field"
-            "array.0" (index into array)
+            "array.0"    (index into array, dot notation)
+            "array[0]"   (index into array, bracket notation; negative allowed)
+
+        Bracket notation is resolved with the same
+        :func:`~rosbag2lerobot.decoders.builtin._parse_array_selector` used by
+        the built-in decoders, so ``field[idx]`` behaves identically for
+        custom ``.msg`` types (e.g. ``RmPlusState.pos[0]``) as for JointState.
         """
         current = obj
         for part in dotted_path.split("."):
             if part.isdigit():
                 current = current[int(part)]
+            elif "[" in part:
+                field_name, index = _parse_array_selector(part)
+                if field_name:
+                    current = getattr(current, field_name)
+                if index is not None:
+                    current = current[index]
             else:
                 current = getattr(current, part)
         return current
