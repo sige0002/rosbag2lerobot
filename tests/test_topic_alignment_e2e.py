@@ -238,7 +238,9 @@ class TestFfmpegNoStdin:
     def test_ffmpeg_calls_pin_stdin_away_from_tty(self) -> None:
         """Static source check on writer.py's encoder ffmpeg call + cli probe."""
         writer_src = (PROJECT_ROOT / "src" / "rosbag2lerobot" / "writer.py").read_text()
-        cli_src = (PROJECT_ROOT / "src" / "rosbag2lerobot" / "cli.py").read_text()
+        cli_src = (
+            PROJECT_ROOT / "src" / "rosbag2lerobot" / "cli" / "_common.py"
+        ).read_text()
         # The writer's only ffmpeg invocation is the streaming encoder, whose
         # stdin is the frame pipe (never the TTY).
         assert "stdin=subprocess.PIPE" in writer_src, (
@@ -246,7 +248,7 @@ class TestFfmpegNoStdin:
         )
         # The ffmpeg -encoders probe in cli.py must also not grab the TTY.
         assert "-nostdin" in cli_src and "stdin=subprocess.DEVNULL" in cli_src, (
-            "cli.py ffmpeg -encoders probe should pass -nostdin + stdin=DEVNULL"
+            "cli/_common.py ffmpeg -encoders probe should pass -nostdin + stdin=DEVNULL"
         )
 
     def test_conversion_completes_without_error(self, tmp_path: Path) -> None:

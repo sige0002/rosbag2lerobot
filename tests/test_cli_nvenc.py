@@ -41,7 +41,7 @@ class TestDetectNvenc:
         fake_result = mock.MagicMock()
         fake_result.stdout = fake_stdout
         with mock.patch(
-            "rosbag2lerobot.cli.subprocess.run",
+            "rosbag2lerobot.cli._common.subprocess.run",
             return_value=fake_result,
         ) as run_mock:
             assert _detect_nvenc() is True
@@ -57,7 +57,7 @@ class TestDetectNvenc:
         fake_result = mock.MagicMock()
         fake_result.stdout = "Encoders:\n V..... libx264 libx264 H.264 / AVC\n"
         with mock.patch(
-            "rosbag2lerobot.cli.subprocess.run",
+            "rosbag2lerobot.cli._common.subprocess.run",
             return_value=fake_result,
         ) as run_mock:
             _detect_nvenc()
@@ -72,7 +72,7 @@ class TestDetectNvenc:
             raise FileNotFoundError("ffmpeg not on PATH")
 
         with mock.patch(
-            "rosbag2lerobot.cli.subprocess.run",
+            "rosbag2lerobot.cli._common.subprocess.run",
             side_effect=_raise_missing,
         ):
             assert _detect_nvenc() is False
@@ -84,7 +84,7 @@ class TestDetectNvenc:
             raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=10)
 
         with mock.patch(
-            "rosbag2lerobot.cli.subprocess.run",
+            "rosbag2lerobot.cli._common.subprocess.run",
             side_effect=_raise_timeout,
         ):
             assert _detect_nvenc() is False

@@ -13,7 +13,7 @@
 - [`trim_to_valid_range` が何をしているか](#trim_to_valid_range-が何をしているか)
 - [ライター (`writer.py`)](#ライター-writerpy)
 - [統計 (`stats.py`)](#統計-statspy)
-- [CLI (`cli.py`)](#cli-clipy)
+- [CLI (`cli/`)](#cli-cli)
 - [並行性とメモリプロファイル](#並行性とメモリプロファイル)
 - [不変条件](#不変条件)
 
@@ -45,7 +45,7 @@
    (data/, videos/, meta/)
 ```
 
-CLI エントリ (`cli.py::convert`) が各 bag についてこのパイプラインを上から順に走らせます。1 bag ディレクトリ = 1 エピソード。
+CLI エントリ (`cli/convert.py::convert`) が各 bag についてこのパイプラインを上から順に走らせます。1 bag ディレクトリ = 1 エピソード。
 
 ### 診断系モジュール
 
@@ -63,7 +63,7 @@ CLI エントリ (`cli.py::convert`) が各 bag についてこのパイプラ�
 | `stats.py` | Welford のオンラインアルゴリズムで min / max / mean / std / 分位数を算出し `meta/stats.json` に書き出す。 |
 | `diagnostics.py` | 診断系の純関数群。`compute_topic_fps_report`（F1: トピック周期統計）、`detect_image_shape` / `_normalize_yaml_image_size`（F3: 画像 shape 検出）、`validate_config_against_bag` + `ValidationReport`（F4: config ↔ bag 整合検証）。CLI からも CI スクリプトからも直接呼べる。 |
 | `audit.py` | 生成済みデータセット側の監査純関数群（F2）。`audit_episode_timestamps` が `meta/episodes/*.parquet` を走査し、`to_timestamp[i] == from_timestamp[i+1]` と mp4 境界のリセット規則を検証。結果は `AuditReport` / `VideoKeyAuditResult` / `BoundaryError` で構造化。 |
-| `cli.py` | Click ベース CLI (`convert`, `inspect`, `validate-config`, `audit-timestamps`, `validate-msg`) とエピソード単位オーケストレーション (`_process_episode`)。 |
+| `cli/` | Click ベース CLI パッケージ。コマンドごとにモジュール分割（`cli/convert.py`, `cli/inspect.py`, `cli/scaffold.py` ほか）。`cli/main.py` が Click グループと登録、`cli/_common.py` が共有ヘルパ、`cli/convert.py` がエピソード単位オーケストレーション (`_process_episode`)。 |
 
 ## 型システムと `.msg` 登録 (`reader.py`)
 
@@ -226,7 +226,7 @@ Welford オンラインアルゴリズムで特徴量ごとに `(n, mean, M2)` �
 
 画像特徴量は `(H, W, C)` → `(C,)` に平均プーリングで縮約し、stats ファイルサイズを抑えます。
 
-## CLI (`cli.py`)
+## CLI (`cli/`)
 
 ### `convert` 内部フロー
 

@@ -645,9 +645,9 @@ class TestProcessEpisodeAlignment:
         )
 
         with (
-            mock.patch("rosbag2lerobot.cli.BagReader", return_value=reader),
+            mock.patch("rosbag2lerobot.cli.convert.BagReader", return_value=reader),
             mock.patch(
-                "rosbag2lerobot.cli.decode",
+                "rosbag2lerobot.cli.convert.decode",
                 return_value=np.array([1.0], dtype=np.float32),
             ),
         ):
@@ -693,9 +693,9 @@ class TestProcessEpisodeAlignment:
         cfg = _two_feature_config(align_to_required=True)
         resampler = Resampler(fps=cfg.fps, policy="hold", tolerance_ms=50.0)
         with (
-            mock.patch("rosbag2lerobot.cli.BagReader", return_value=reader),
+            mock.patch("rosbag2lerobot.cli.convert.BagReader", return_value=reader),
             mock.patch(
-                "rosbag2lerobot.cli.decode",
+                "rosbag2lerobot.cli.convert.decode",
                 return_value=np.array([1.0], dtype=np.float32),
             ),
         ):

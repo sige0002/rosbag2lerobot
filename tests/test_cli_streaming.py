@@ -24,7 +24,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from rosbag2lerobot import cli as cli_module
+from rosbag2lerobot.cli import convert as cli_module
 from rosbag2lerobot.cli import _iter_episodes_parallel, _iter_episodes_serial
 from rosbag2lerobot.config import SplitConfig
 

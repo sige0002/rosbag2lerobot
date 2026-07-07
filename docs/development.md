@@ -16,7 +16,16 @@
 rosbag2lerobot/
 ├── src/rosbag2lerobot/
 │   ├── __init__.py
-│   ├── cli.py               # Click CLI (convert, inspect, validate-config, audit-timestamps, validate-msg)
+│   ├── cli/                 # Click CLI パッケージ（コマンドごとに分割）
+│   │   ├── __init__.py       # 再エクスポート（main / ヘルパ）
+│   │   ├── main.py           # Click グループ＋コマンド登録
+│   │   ├── _common.py        # 共有ヘルパ（logger, _detect_nvenc, _emit_report ...）
+│   │   ├── convert.py        # convert コマンド＋パイプライン
+│   │   ├── inspect.py        # inspect コマンド
+│   │   ├── scaffold.py       # scaffold コマンド
+│   │   ├── validate_config.py / validate_msg.py / validate_dataset.py
+│   │   ├── audit_timestamps.py / quality_report.py
+│   │   └── preview.py / push_to_hub.py / to_mcap.py
 │   ├── config.py            # YAML ローダ＋データクラス
 │   ├── reader.py            # rosbag リーダ（rosbags ライブラリ）
 │   ├── resampler.py         # 可変レート → 固定 FPS リサンプラ
