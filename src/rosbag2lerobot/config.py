@@ -1,4 +1,4 @@
-"""Robot configuration loader and validator for bagel.
+"""Robot configuration loader and validator for rosbag2lerobot.
 
 Loads ``robot_config.yaml`` files and validates them against the expected
 schema for converting ROS2 rosbag data to LeRobot Dataset v3.0 format.
@@ -732,7 +732,7 @@ def config_to_yaml(
 
     This is the inverse of :func:`load_config`: the *uncommented* lines of
     the returned text parse back to an equivalent ``RobotConfig`` (the
-    round-trip guarantee relied on by ``bagel scaffold``). Comments —
+    round-trip guarantee relied on by ``rosbag2lerobot scaffold``). Comments —
     header notes, per-feature annotations, and commented-out candidate
     blocks — are interleaved by hand because dataclasses carry no comment
     metadata, while the feature *values* go through ``yaml.safe_dump`` so

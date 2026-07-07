@@ -1,4 +1,4 @@
-"""CLI entry point for bagel.
+"""CLI entry point for rosbag2lerobot.
 
 Provides the following Click commands:
 
@@ -34,14 +34,14 @@ the human-readable summary.
 
 Usage::
 
-    bagel convert --config my_config.yaml --bags /bags/ --output /out/
-    bagel scaffold --bags /bags/ -o robot_config.yaml
-    bagel inspect --bags /bags/
-    bagel validate-dataset --dataset /out/
-    bagel quality-report --dataset /out/
-    bagel validate-msg --msg msgs/MyType.msg
-    bagel preview --dataset /out/
-    bagel push-to-hub --dataset /out/ --dry-run
+    rosbag2lerobot convert --config my_config.yaml --bags /bags/ --output /out/
+    rosbag2lerobot scaffold --bags /bags/ -o robot_config.yaml
+    rosbag2lerobot inspect --bags /bags/
+    rosbag2lerobot validate-dataset --dataset /out/
+    rosbag2lerobot quality-report --dataset /out/
+    rosbag2lerobot validate-msg --msg msgs/MyType.msg
+    rosbag2lerobot preview --dataset /out/
+    rosbag2lerobot push-to-hub --dataset /out/ --dry-run
 """
 
 from __future__ import annotations
@@ -61,34 +61,34 @@ from typing import Any, Optional, TYPE_CHECKING
 import click
 
 if TYPE_CHECKING:
-    from bagel.diagnostics import ValidationReport
+    from rosbag2lerobot.diagnostics import ValidationReport
 
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
-from bagel import __version__ as _BAGEL_VERSION
-from bagel.bagconvert import (
+from rosbag2lerobot import __version__ as _ROSBAG2LEROBOT_VERSION
+from rosbag2lerobot.bagconvert import (
     DEFAULT_DST_VERSION,
     convert_to_mcap,
     discover_ros1_bags,
     output_name,
 )
-from bagel.config import (
+from rosbag2lerobot.config import (
     config_to_yaml,
     load_config,
     RobotConfig,
     FeatureMapping,
     ResamplingConfig,
 )
-from bagel.decoders import decode, decode_array
-from bagel.jobmeta import EpisodeResult, JobSummary, dir_bytes
-from bagel.manifest import ManifestInput, ffmpeg_version, sha256_of_path
-from bagel.reader import BagReader, discover_bags, extract_header_stamp_ns
-from bagel.resampler import Resampler, trim_to_valid_range
-from bagel.task_spec import SubtaskSpan, resolve_task
-from bagel.transforms import TransformLookup, quat_xyzw_to_euler
+from rosbag2lerobot.decoders import decode, decode_array
+from rosbag2lerobot.jobmeta import EpisodeResult, JobSummary, dir_bytes
+from rosbag2lerobot.manifest import ManifestInput, ffmpeg_version, sha256_of_path
+from rosbag2lerobot.reader import BagReader, discover_bags, extract_header_stamp_ns
+from rosbag2lerobot.resampler import Resampler, trim_to_valid_range
+from rosbag2lerobot.task_spec import SubtaskSpan, resolve_task
+from rosbag2lerobot.transforms import TransformLookup, quat_xyzw_to_euler
 
 
-logger = logging.getLogger("bagel")
+logger = logging.getLogger("rosbag2lerobot")
 
 
 def _detect_nvenc() -> bool:
@@ -199,7 +199,7 @@ def _emit_report(
 @click.group()
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
 def main(verbose: bool) -> None:
-    """bagel – convert ROS2 rosbags to LeRobot Dataset v3.0."""
+    """rosbag2lerobot – convert ROS2 rosbags to LeRobot Dataset v3.0."""
     _setup_logging(verbose)
 
 
@@ -319,10 +319,10 @@ def convert(
     # 1. Load config
     cfg = load_config(config_path)
 
-    # --quiet / --json suppress bagel's INFO chatter so the progress bar (or
+    # --quiet / --json suppress rosbag2lerobot's INFO chatter so the progress bar (or
     # the emitted JSON summary) is the only output. Errors still surface.
     if quiet or json_summary:
-        logging.getLogger("bagel").setLevel(logging.WARNING)
+        logging.getLogger("rosbag2lerobot").setLevel(logging.WARNING)
 
     # Apply CLI overrides
     if task is not None:
@@ -471,7 +471,7 @@ def convert(
         "inputs": manifest_inputs,
         "config_snapshot": config_snapshot,
         "config_sha256": config_sha256,
-        "bagel_version": _BAGEL_VERSION,
+        "rosbag2lerobot_version": _ROSBAG2LEROBOT_VERSION,
         "ffmpeg_version": ffmpeg_version(),
         "run_timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -503,7 +503,7 @@ def convert(
 
     # 6. Write dataset
     try:
-        from bagel.writer import write_dataset
+        from rosbag2lerobot.writer import write_dataset
 
         write_dataset(
             episodes=episodes_iter,
@@ -1521,7 +1521,7 @@ def _collect_topic_fps_reports(
     """
     import numpy as np
 
-    from bagel.diagnostics import compute_topic_fps_report
+    from rosbag2lerobot.diagnostics import compute_topic_fps_report
 
     start_ns, end_ns = reader.get_time_range()
     topics_info = reader.get_topics_info()
@@ -1644,7 +1644,7 @@ def _run_image_shape_check(
     samples: int,
 ) -> list[dict[str, Any]]:
     """Detect per-image-topic shape and compare with YAML image_size."""
-    from bagel.diagnostics import (
+    from rosbag2lerobot.diagnostics import (
         _normalize_yaml_image_size,
         detect_image_shape,
     )
@@ -1792,7 +1792,7 @@ def validate_config(
     json_stdout: bool,
 ) -> None:
     """Validate a YAML config against the contents of a rosbag."""
-    from bagel.diagnostics import validate_config_against_bag
+    from rosbag2lerobot.diagnostics import validate_config_against_bag
 
     cfg = load_config(config_path)
     bag_paths = discover_bags(bags_path)
@@ -1872,7 +1872,7 @@ def _print_validation_summary(payload: dict[str, Any]) -> None:
 def _print_suggested_fixes(report: "ValidationReport") -> None:
     """Print copy-pasteable ``image_size`` diffs for image-shape mismatches.
 
-    For every :class:`~bagel.diagnostics.ImageShapeMismatch` the block shows
+    For every :class:`~rosbag2lerobot.diagnostics.ImageShapeMismatch` the block shows
     the current YAML ``image_size`` and the measured ``[H, W, C]`` as a unified
     diff snippet the user can paste over the offending feature::
 
@@ -2242,7 +2242,7 @@ def _scaffold_from_topics(
     )
 
     header = [
-        "Generated by `bagel scaffold` — review before use.",
+        "Generated by `rosbag2lerobot scaffold` — review before use.",
         f"Source bag: {bag_name} (scaffolded from the first discovered bag only).",
         "Commented '# - key:' blocks are candidates; uncomment + edit to enable.",
     ]
@@ -2277,8 +2277,8 @@ def scaffold_config_yaml(
     Returns:
         The rendered YAML text.
     """
-    from bagel.decoders import get_registered_types
-    from bagel.diagnostics import detect_image_shape
+    from rosbag2lerobot.decoders import get_registered_types
+    from rosbag2lerobot.diagnostics import detect_image_shape
 
     registered = set(get_registered_types())
 
@@ -2443,7 +2443,7 @@ def _scaffold_validate(config_path: Path, bag_path: Path) -> None:
         config_path: Path to the freshly written scaffold config.
         bag_path: The bag the config was scaffolded from.
     """
-    from bagel.diagnostics import validate_config_against_bag
+    from rosbag2lerobot.diagnostics import validate_config_against_bag
 
     cfg = load_config(config_path)
     with BagReader(bag_path, cfg) as reader:
@@ -2575,7 +2575,7 @@ def audit_timestamps(
     each mp4 file and that ``from_timestamp`` only resets to ``0.0`` at mp4
     file boundaries. Exits with status 1 on any violation.
     """
-    from bagel.audit import audit_episode_timestamps
+    from rosbag2lerobot.audit import audit_episode_timestamps
 
     vkeys = [video_key] if video_key else None
     try:
@@ -2684,7 +2684,7 @@ def validate_dataset_cmd(
     """
     import pyarrow.lib as pa_lib
 
-    from bagel.validation import validate_dataset
+    from rosbag2lerobot.validation import validate_dataset
 
     try:
         report = validate_dataset(Path(dataset_path))
@@ -2793,7 +2793,7 @@ def quality_report_cmd(
     when the score is below ``--score-threshold`` or any video has a frame
     mismatch; 2 on a setup error (missing/unreadable metadata).
     """
-    from bagel.quality import compute_quality_report
+    from rosbag2lerobot.quality import compute_quality_report
 
     try:
         report = compute_quality_report(
@@ -2901,7 +2901,7 @@ def preview_cmd(
     video frames (inline base64), and the numeric per-feature statistics into
     a single self-contained HTML file (no external assets).
     """
-    from bagel.preview import generate_preview
+    from rosbag2lerobot.preview import generate_preview
 
     dataset_dir = Path(dataset_path)
     try:
@@ -2983,8 +2983,8 @@ def push_to_hub_cmd(
     ``--card-out`` when given). Without ``--dry-run`` the dataset is uploaded
     and the card is placed at the repo root.
     """
-    from bagel.hub import plan_push, push_to_hub
-    from bagel.quality import _read_info
+    from rosbag2lerobot.hub import plan_push, push_to_hub
+    from rosbag2lerobot.quality import _read_info
 
     dataset_dir = Path(dataset_path)
 
@@ -3073,9 +3073,9 @@ def to_mcap(
 ) -> None:
     """Convert ROS1 .bag recordings to ROS2 MCAP bags.
 
-    bagel itself only reads ROS2 bags (mcap/sqlite3). Use this command to
+    rosbag2lerobot itself only reads ROS2 bags (mcap/sqlite3). Use this command to
     pre-convert ROS1 .bag recordings (e.g. the airoa raw dataset) so they
-    can be fed to `bagel convert`.
+    can be fed to `rosbag2lerobot convert`.
 
     SOURCES may be .bag files or directories (searched recursively for
     *.bag). Each input bag is written to <output>/<name>/, where <name> is

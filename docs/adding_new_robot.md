@@ -1,6 +1,6 @@
 # 新しいロボットの追加手順
 
-新規ロボット（新しい bag セット）を `bagel` に統合する流れを、順に解説します。各ステップは前段を前提にしています。
+新規ロボット（新しい bag セット）を `rosbag2lerobot` に統合する流れを、順に解説します。各ステップは前段を前提にしています。
 
 ## 目次
 
@@ -18,7 +18,7 @@
 
 ## 同梱設定一覧
 
-`src/bagel/configs/` にある YAML は、新規設定を書き始めるときの参考になります。
+`src/rosbag2lerobot/configs/` にある YAML は、新規設定を書き始めるときの参考になります。
 
 | ファイル | 構成 |
 |---|---|
@@ -29,7 +29,7 @@
 ## 0. 前提条件
 
 ```bash
-cd bagel
+cd rosbag2lerobot
 uv venv .venv && source .venv/bin/activate
 uv sync                       # ランタイム依存
 uv sync --extra dev           # + pytest, ruff など
@@ -39,8 +39,8 @@ sudo apt-get install ffmpeg   # 動画エンコード用
 確認:
 
 ```bash
-bagel --help
-bagel inspect --bags /path/to/ros_sample_bag/
+rosbag2lerobot --help
+rosbag2lerobot inspect --bags /path/to/ros_sample_bag/
 ```
 
 ## 1. bag の調査
@@ -48,7 +48,7 @@ bagel inspect --bags /path/to/ros_sample_bag/
 まず `inspect` で bag の中身を見ます。設定の情報源はこれ（推測で書かない）。
 
 ```bash
-bagel inspect --bags /path/to/ros_sample_bag/ \
+rosbag2lerobot inspect --bags /path/to/ros_sample_bag/ \
   | grep -v "(0 msgs)"
 ```
 
@@ -93,7 +93,7 @@ custom_msgs:
 検証:
 
 ```bash
-bagel validate-msg --msg msgs/my_robot/MyCustomMsg.msg
+rosbag2lerobot validate-msg --msg msgs/my_robot/MyCustomMsg.msg
 ```
 
 ### C. カスタムデコーダを書く
@@ -166,7 +166,7 @@ resampling:
 実書き込みをせず、config と bag の整合性を確認:
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/my_robot.yaml \
   --bags /path/to/ros_sample_bag/ \
   --output /tmp/dry --dry-run
@@ -175,13 +175,13 @@ bagel convert \
 observation / action と各 bag のトピック表が並ぶので、ここでトピック名・メッセージ型の不一致を全部潰します。verbose でさらに詳細を出したければ `-v` を先頭に付与:
 
 ```bash
-bagel -v convert --dry-run ...
+rosbag2lerobot -v convert --dry-run ...
 ```
 
 ## 6. 本番変換
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/my_robot.yaml \
   --bags /path/to/ros_sample_bag_dir/ \
   --output /path/to/output_dataset/
@@ -211,11 +211,11 @@ for c in t.column_names:
 `tests/test_e2e_<robot>.py` を作成して最低限以下をチェック:
 
 ```python
-from bagel.config import load_config
+from rosbag2lerobot.config import load_config
 
 class TestMyRobotConfig:
     def test_load_yaml(self):
-        cfg = load_config("src/bagel/configs/my_robot.yaml")
+        cfg = load_config("src/rosbag2lerobot/configs/my_robot.yaml")
         assert cfg.fps == 30
         assert "observation.state" in cfg.observation_keys
         assert cfg.resampling.default_policy == "hold"

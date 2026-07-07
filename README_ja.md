@@ -1,4 +1,4 @@
-# bagel
+# rosbag2lerobot
 
 ROS2 rosbag ファイルを
 [LeRobot Dataset v3.0](https://huggingface.co/docs/lerobot) 形式に変換
@@ -14,8 +14,8 @@ Python 3.11+ と [uv](https://docs.astral.sh/uv/) が必要です。
 
 ```bash
 # リポジトリをクローン
-git clone https://github.com/sige0002/bagel.git
-cd bagel
+git clone https://github.com/sige0002/rosbag2lerobot.git
+cd rosbag2lerobot
 
 # 仮想環境を作成してインストール
 uv venv .venv
@@ -44,13 +44,13 @@ Python パッケージ（PyTorch 等）は一切不要です。詳細は
 ### 1. rosbag の確認
 
 ```bash
-bagel inspect --bags /path/to/my_bag/
+rosbag2lerobot inspect --bags /path/to/my_bag/
 ```
 
 ### 2. 単一 bag の変換
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/my_bag/ \
   --output /path/to/output_dataset/
@@ -59,7 +59,7 @@ bagel convert \
 ### 3. 複数 bag の変換（bag ごとに1エピソード）
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/all_bags/ \
   --output /path/to/output_dataset/ \
@@ -70,7 +70,7 @@ bagel convert \
 ### 4. Dry run（書き込みなしで検証）
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/all_bags/ \
   --output /tmp/dry \
@@ -80,20 +80,20 @@ bagel convert \
 ### 5. カスタム .msg ファイルの検証
 
 ```bash
-bagel validate-msg --msg msgs/my_robot/MyType.msg
+rosbag2lerobot validate-msg --msg msgs/my_robot/MyType.msg
 ```
 
 ### 6. 未知ロボットの config を雛形生成
 
 ```bash
-bagel scaffold --bags /path/to/all_bags/ -o configs/my_robot.yaml
+rosbag2lerobot scaffold --bags /path/to/all_bags/ -o configs/my_robot.yaml
 ```
 
 ### 7. 生成データセットの検証とスコアリング
 
 ```bash
-bagel validate-dataset --dataset /path/to/output_dataset/
-bagel quality-report   --dataset /path/to/output_dataset/ -o report.json
+rosbag2lerobot validate-dataset --dataset /path/to/output_dataset/
+rosbag2lerobot quality-report   --dataset /path/to/output_dataset/ -o report.json
 ```
 
 ## コマンド一覧
@@ -121,7 +121,7 @@ bagel quality-report   --dataset /path/to/output_dataset/ -o report.json
 処理を継続します（中断せず、成功エピソードからデータセットを確定）。各ランは
 `meta/` 配下に 2 ファイルを書き出します: `conversion_log.json`（来歴 — 入力
 SHA256・bag 毎のフレーム数/所要時間・コーデック・config スナップショット+ハッシュ・
-bagel/ffmpeg バージョン・実行時刻）と `job_summary.json`（成功/失敗件数・スループット・
+rosbag2lerobot/ffmpeg バージョン・実行時刻）と `job_summary.json`（成功/失敗件数・スループット・
 バイト数・ワーカー別/エピソード別の内訳）。
 
 **レポート系コマンドの `--json`.** `validate-config` / `validate-dataset` /
@@ -178,7 +178,7 @@ bagel/ffmpeg バージョン・実行時刻）と `job_summary.json`（成功/�
 ### NVENC（GPU）自動検出
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/bags --output /path/to/out \
   --video-codec auto
@@ -187,7 +187,7 @@ bagel convert \
 ### CPU 強制（libx264、再現性重視）
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/bags --output /path/to/out \
   --no-gpu
@@ -196,7 +196,7 @@ bagel convert \
 ### 並列ワーカー（4 エピソード同時）
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/bags --output /path/to/out \
   --video-codec auto --workers 4
@@ -205,7 +205,7 @@ bagel convert \
 ### Blackwell / DGX Spark での AV1 UHQ
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/bags --output /path/to/out \
   --video-codec av1_nvenc --ffmpeg-preset p4

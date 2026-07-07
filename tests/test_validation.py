@@ -1,4 +1,4 @@
-"""Tests for :mod:`bagel.validation` (P0-4 validate-dataset).
+"""Tests for :mod:`rosbag2lerobot.validation` (P0-4 validate-dataset).
 
 Fast unit tests build a tiny real dataset with :class:`DatasetWriter` (reusing
 the helper style of ``tests/test_video_frame_alignment.py``) and assert that a
@@ -21,9 +21,9 @@ import pytest
 from click.testing import CliRunner
 from PIL import Image
 
-from bagel.cli import main
-from bagel.validation import DatasetValidationReport, validate_dataset
-from bagel.writer import DatasetWriter
+from rosbag2lerobot.cli import main
+from rosbag2lerobot.validation import DatasetValidationReport, validate_dataset
+from rosbag2lerobot.writer import DatasetWriter
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_DATASET = PROJECT_ROOT / "output" / "airoa_moma_mcap_hsr"

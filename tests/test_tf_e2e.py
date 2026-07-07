@@ -63,7 +63,7 @@ def _load_tf_config() -> Any:
     configs/*.yaml are never mutated on disk: the appended feature and the fps
     override live on the in-memory RobotConfig.
     """
-    from bagel.config import FeatureMapping, load_config
+    from rosbag2lerobot.config import FeatureMapping, load_config
 
     cfg = load_config(HSR_CONFIG)
     cfg.fps = _TEST_FPS
@@ -88,9 +88,9 @@ def _load_tf_config() -> Any:
 def test_real_tf_lookup_returns_finite_pose() -> None:
     """A TransformLookup built from the real bag resolves base_link<-hand_palm_link."""
     _require(HSR_BAG)
-    from bagel.config import load_config
-    from bagel.reader import BagReader
-    from bagel.transforms import TransformLookup
+    from rosbag2lerobot.config import load_config
+    from rosbag2lerobot.reader import BagReader
+    from rosbag2lerobot.transforms import TransformLookup
 
     cfg = load_config(HSR_CONFIG)
     lookup = TransformLookup()
@@ -135,10 +135,10 @@ def test_tf_feature_convert_writes_euler_column(tmp_path: Path) -> None:
     _require(HSR_BAG)
     import pandas as pd
 
-    from bagel.cli import _process_episode
-    from bagel.resampler import Resampler
-    from bagel.validation import validate_dataset
-    from bagel.writer import write_dataset
+    from rosbag2lerobot.cli import _process_episode
+    from rosbag2lerobot.resampler import Resampler
+    from rosbag2lerobot.validation import validate_dataset
+    from rosbag2lerobot.writer import write_dataset
 
     cfg = _load_tf_config()
     resampler = Resampler(

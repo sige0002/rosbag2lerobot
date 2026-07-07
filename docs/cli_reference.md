@@ -1,6 +1,6 @@
 # CLI リファレンス
 
-`bagel` は Click ベースの CLI です。
+`rosbag2lerobot` は Click ベースの CLI です。
 
 | コマンド | 用途 |
 |---|---|
@@ -46,13 +46,13 @@
 ## 共通オプション
 
 ```bash
-bagel [-v|--verbose] <subcommand> [OPTIONS]
+rosbag2lerobot [-v|--verbose] <subcommand> [OPTIONS]
 ```
 
 | オプション | 説明 |
 |---|---|
 | `-v, --verbose` | ログレベルを DEBUG に引き上げる。通常は INFO。メッセージ型登録の詳細、フレームごとの判定結果、ffmpeg 呼び出し行などが見えるようになる。問題切り分け時に最初につけるフラグ。 |
-| `--help` | ヘルプ表示。サブコマンド側にも付与可能（`bagel convert --help`）。 |
+| `--help` | ヘルプ表示。サブコマンド側にも付与可能（`rosbag2lerobot convert --help`）。 |
 
 > **verbose の使いどころ**：`trim_to_valid: dropped N frames` のような info ログは標準でも出るが、「どの required キーが欠けて trim されたか」「カスタム msg の登録が成功したか」「ffmpeg に渡された実コマンド」は DEBUG でないと見えません。
 
@@ -77,7 +77,7 @@ bagel [-v|--verbose] <subcommand> [OPTIONS]
 bag の中身を覗くだけ。config 不要で走らせられます。追加フラグで FPS 統計 (F1) や image_size 提案 (F3) に切り替わります。
 
 ```bash
-bagel inspect --bags /path/to/ros_sample_bag/
+rosbag2lerobot inspect --bags /path/to/ros_sample_bag/
 ```
 
 ### 基本オプション
@@ -102,7 +102,7 @@ bagel inspect --bags /path/to/ros_sample_bag/
 | `--head INT` | `5` | 先頭サンプルの間隔を何件出力に含めるか。 |
 | `--json-out PATH` | なし | 指定すると `--fps-stats` と `--suggest-image-size` の結果を JSON で書き出す（人間向け出力は抑制）。 |
 
-出力は bag ごとに `(topic, msg_count, mean_fps, min, max, head_lag_ms, gaps)` を並べた表。`mean_fps` はトピックの実効レート（`正の間隔数 / 総経過時間`）で、バースト送信でタイムスタンプがほぼ重複しても外れ値に引っ張られません。`min` / `max` は瞬間レート（間隔ごとの `1/dt`）の分布なので、ピークは大きく出ることがあります。純関数本体は `bagel.diagnostics.compute_topic_fps_report` を参照。
+出力は bag ごとに `(topic, msg_count, mean_fps, min, max, head_lag_ms, gaps)` を並べた表。`mean_fps` はトピックの実効レート（`正の間隔数 / 総経過時間`）で、バースト送信でタイムスタンプがほぼ重複しても外れ値に引っ張られません。`min` / `max` は瞬間レート（間隔ごとの `1/dt`）の分布なので、ピークは大きく出ることがあります。純関数本体は `rosbag2lerobot.diagnostics.compute_topic_fps_report` を参照。
 
 ### image_size 提案 (F3)
 
@@ -114,14 +114,14 @@ bagel inspect --bags /path/to/ros_sample_bag/
 | `--samples INT` | `5` | 1 トピックあたりデコードするサンプルフレーム数。 |
 | `--json-out PATH` | なし | 上記 FPS 統計と共通。JSON 出力先。 |
 
-結果は `(key, topic, yaml_image_size, decoded_shape, mismatch)` のリスト。`mismatch=true` のトピックは YAML 側を修正する目安になります。純関数は `bagel.diagnostics.detect_image_shape`。
+結果は `(key, topic, yaml_image_size, decoded_shape, mismatch)` のリスト。`mismatch=true` のトピックは YAML 側を修正する目安になります。純関数は `rosbag2lerobot.diagnostics.detect_image_shape`。
 
 ## `scaffold`
 
 未知ロボットの bag から `robot_config.yaml` の雛形を自動生成します。最初に見つかった 1 bag のトピックを走査し、image トピックと、デコーダで読める数値トピックを LeRobot の feature key にマッピングします。デコーダ未対応のトピックや command 系トピックは「候補」としてコメントアウトして出力します。生成後はメモリ上で config を検証し、さらに `--no-validate` を付けない限り、その bag に対して `validate-config` を実行してマッピング保証（往復可能性）を確認します。
 
 ```bash
-bagel scaffold \
+rosbag2lerobot scaffold \
   --bags /path/to/ros_sample_bag/ \
   -o configs/my_robot.yaml
 ```
@@ -224,7 +224,7 @@ CLI から YAML の一部を上書きできます。一度きりの実験用。
 
 | ファイル | 内容 |
 |---|---|
-| `meta/conversion_log.json` | **来歴（provenance）マニフェスト**。各入力 bag の `path` / `sha256`（記録ペイロードのみのハッシュ。`metadata.yaml` は除外）/ `frame_count` / `processing_time_s`、有効なコーデック・`ffmpeg_preset` / `ffmpeg_crf`、`fps`、`total_episodes` / `total_frames`、config の全文スナップショット（`config_snapshot`）とその `config_sha256`、`bagel_version` / `ffmpeg_version`、`run_timestamp`（ISO-8601 UTC）。 |
+| `meta/conversion_log.json` | **来歴（provenance）マニフェスト**。各入力 bag の `path` / `sha256`（記録ペイロードのみのハッシュ。`metadata.yaml` は除外）/ `frame_count` / `processing_time_s`、有効なコーデック・`ffmpeg_preset` / `ffmpeg_crf`、`fps`、`total_episodes` / `total_frames`、config の全文スナップショット（`config_snapshot`）とその `config_sha256`、`rosbag2lerobot_version` / `ffmpeg_version`、`run_timestamp`（ISO-8601 UTC）。 |
 | `meta/job_summary.json` | **ランの統計**。`n_episodes` / `n_success` / `n_failed`、`total_frames`、`wall_time_s`、スループット `frames_per_min`、`input_bytes` / `output_bytes`、`workers`（ワーカー別の件数/フレーム/時間）、`episodes`（エピソード別の `index` / `bag_path` / `worker` / `success` / `n_frames` / `processing_time_s` / `error`）。 |
 
 `--json` を付けると `job_summary.json` と同じ dict が stdout にも出力されます。
@@ -296,10 +296,10 @@ Unknown feature mapping key: 'topci' (did you mean: topic?)
 
 ## `validate-config`
 
-YAML config と bag の整合性を検証します（F4）。CI で config ドリフトを検知する用途を想定。純関数は `bagel.diagnostics.validate_config_against_bag`。
+YAML config と bag の整合性を検証します（F4）。CI で config ドリフトを検知する用途を想定。純関数は `rosbag2lerobot.diagnostics.validate_config_against_bag`。
 
 ```bash
-bagel validate-config \
+rosbag2lerobot validate-config \
   --config configs/my_robot.yaml \
   --bags /path/to/ros_sample_bag/
 ```
@@ -330,7 +330,7 @@ bagel validate-config \
 生成済みデータセットが LeRobot Dataset v3.0 の構造に準拠しているか検証します。CI で生成物の破損や仕様逸脱を検知する用途を想定。
 
 ```bash
-bagel validate-dataset --dataset /path/to/output_dataset/
+rosbag2lerobot validate-dataset --dataset /path/to/output_dataset/
 ```
 
 | オプション | 必須 | デフォルト | 説明 |
@@ -361,7 +361,7 @@ bagel validate-dataset --dataset /path/to/output_dataset/
 生成済みデータセットのデータ品質をスコアリングし、スコアカードを出力します。
 
 ```bash
-bagel quality-report \
+rosbag2lerobot quality-report \
   --dataset /path/to/output_dataset/ \
   -o report.json
 ```
@@ -393,10 +393,10 @@ bagel quality-report \
 
 ## `audit-timestamps`
 
-生成済み LeRobot v3.0 データセットの `meta/episodes/*.parquet` のタイムスタンプ連続性を監査します（F2）。純関数は `bagel.audit.audit_episode_timestamps`。
+生成済み LeRobot v3.0 データセットの `meta/episodes/*.parquet` のタイムスタンプ連続性を監査します（F2）。純関数は `rosbag2lerobot.audit.audit_episode_timestamps`。
 
 ```bash
-bagel audit-timestamps --dataset /path/to/output_dataset/
+rosbag2lerobot audit-timestamps --dataset /path/to/output_dataset/
 ```
 
 | オプション | 必須 | デフォルト | 説明 |
@@ -419,7 +419,7 @@ bagel audit-timestamps --dataset /path/to/output_dataset/
 `.msg` ファイルの構文だけチェックします。`custom_msgs` を書く前に使う。
 
 ```bash
-bagel validate-msg --msg msgs/my_robot/MyCustomMsg.msg
+rosbag2lerobot validate-msg --msg msgs/my_robot/MyCustomMsg.msg
 ```
 
 | オプション | 必須 | 説明 |
@@ -434,7 +434,7 @@ bagel validate-msg --msg msgs/my_robot/MyCustomMsg.msg
 生成済みデータセットの **自己完結型 HTML プレビューレポート**を 1 ファイルで書き出します。サマリ・品質スコアと表・サンプル動画フレームのギャラリー（inline base64）・特徴量ごとの数値統計を、外部アセットなしの単一 HTML にレンダリングします。**読み取り専用**でサーバは不要です。
 
 ```bash
-bagel preview --dataset /path/to/output_dataset/
+rosbag2lerobot preview --dataset /path/to/output_dataset/
 # => /path/to/output_dataset/meta/preview.html
 ```
 
@@ -456,7 +456,7 @@ bagel preview --dataset /path/to/output_dataset/
 
 ```bash
 # 各カメラ 5 フレームを埋め込み、フリーズ検出も実施して出力先を指定
-bagel preview \
+rosbag2lerobot preview \
   --dataset /path/to/output_dataset/ \
   --n-frames 5 \
   --sample-video \
@@ -471,10 +471,10 @@ bagel preview \
 
 ```bash
 # 計画のみ（アップロードなし）
-bagel push-to-hub --dataset /path/to/output_dataset/ --dry-run
+rosbag2lerobot push-to-hub --dataset /path/to/output_dataset/ --dry-run
 
 # 実アップロード（HF 認証が必要）
-bagel push-to-hub --dataset /path/to/output_dataset/ --repo-id myorg/my-dataset
+rosbag2lerobot push-to-hub --dataset /path/to/output_dataset/ --repo-id myorg/my-dataset
 ```
 
 | オプション | 必須 | デフォルト | 説明 |
@@ -500,7 +500,7 @@ bagel push-to-hub --dataset /path/to/output_dataset/ --repo-id myorg/my-dataset
 
 ```bash
 # dry-run でカードを確認しつつファイルに保存
-bagel push-to-hub \
+rosbag2lerobot push-to-hub \
   --dataset /path/to/output_dataset/ \
   --repo-id myorg/my-dataset \
   --dry-run \
@@ -509,10 +509,10 @@ bagel push-to-hub \
 
 ## `to-mcap`
 
-ROS1 `.bag` 録画を ROS2 MCAP bag に変換します。`bagel` 本体は ROS2 bag（mcap/sqlite3）しか読めないため、ROS1 録画（例: airoa raw データセット）を事前変換して `bagel convert` に渡せるようにする用途です。
+ROS1 `.bag` 録画を ROS2 MCAP bag に変換します。`rosbag2lerobot` 本体は ROS2 bag（mcap/sqlite3）しか読めないため、ROS1 録画（例: airoa raw データセット）を事前変換して `rosbag2lerobot convert` に渡せるようにする用途です。
 
 ```bash
-bagel to-mcap -o /path/to/out_bags/ /path/to/ros1_bags/
+rosbag2lerobot to-mcap -o /path/to/out_bags/ /path/to/ros1_bags/
 ```
 
 | オプション | 必須 | デフォルト | 説明 |
@@ -529,14 +529,14 @@ bagel to-mcap -o /path/to/out_bags/ /path/to/ros1_bags/
 ### 1. まずは inspect
 
 ```bash
-bagel inspect --bags /path/to/ros_sample_bag/
+rosbag2lerobot inspect --bags /path/to/ros_sample_bag/
 ```
 
 ### 2. dry-run で config を詰める
 
 ```bash
-bagel convert \
-  --config src/bagel/configs/robot_template.yaml \
+rosbag2lerobot convert \
+  --config src/rosbag2lerobot/configs/robot_template.yaml \
   --bags /path/to/ros_sample_bag/ \
   --output /tmp/dry --dry-run
 ```
@@ -544,7 +544,7 @@ bagel convert \
 ### 3. 本番変換（auto codec、単一プロセス）
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/my_robot.yaml \
   --bags /path/to/ros_sample_bag/ \
   --output /path/to/output_dataset/
@@ -553,7 +553,7 @@ bagel convert \
 ### 4. 複数 bag を 4 並列で変換、上限 10 エピソード
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/my_robot.yaml \
   --bags /path/to/ros_sample_bag_dir/ \
   --output /path/to/output_dataset/ \
@@ -564,7 +564,7 @@ bagel convert \
 ### 5. CPU 固定（再現性重視）
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/my_robot.yaml \
   --bags /path/to/ros_sample_bag/ \
   --output /path/to/out \
@@ -574,7 +574,7 @@ bagel convert \
 ### 6. AV1 NVENC + 高品質プリセット
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/my_robot.yaml \
   --bags /path/to/ros_sample_bag/ \
   --output /path/to/out \
@@ -584,7 +584,7 @@ bagel convert \
 ### 7. デバッグログを出す
 
 ```bash
-bagel -v convert \
+rosbag2lerobot -v convert \
   --config configs/my_robot.yaml \
   --bags /path/to/ros_sample_bag/ \
   --output /tmp/out --dry-run
@@ -593,13 +593,13 @@ bagel -v convert \
 ### 8. カスタム `.msg` の事前検証
 
 ```bash
-bagel validate-msg --msg msgs/my_robot/MyCustomMsg.msg
+rosbag2lerobot validate-msg --msg msgs/my_robot/MyCustomMsg.msg
 ```
 
 ### 9. トピック周期を計測（F1）
 
 ```bash
-bagel inspect \
+rosbag2lerobot inspect \
   --bags /path/to/ros_sample_bag/ \
   --fps-stats \
   --gap-threshold-ms 100 \
@@ -609,7 +609,7 @@ bagel inspect \
 特定トピックだけ見たい場合:
 
 ```bash
-bagel inspect \
+rosbag2lerobot inspect \
   --bags /path/to/ros_sample_bag/ \
   --fps-stats \
   --topics /camera/color/image_raw,/joint_states \
@@ -619,7 +619,7 @@ bagel inspect \
 ### 10. YAML の `image_size` を実データで検証（F3）
 
 ```bash
-bagel inspect \
+rosbag2lerobot inspect \
   --bags /path/to/ros_sample_bag/ \
   --config configs/my_robot.yaml \
   --suggest-image-size \
@@ -629,7 +629,7 @@ bagel inspect \
 ### 11. config と bag の整合性を CI で検証（F4）
 
 ```bash
-bagel validate-config \
+rosbag2lerobot validate-config \
   --config configs/my_robot.yaml \
   --bags /path/to/ros_sample_bag/ \
   --strict \
@@ -639,7 +639,7 @@ bagel validate-config \
 ### 12. 生成データセットのタイムスタンプ監査（F2）
 
 ```bash
-bagel audit-timestamps \
+rosbag2lerobot audit-timestamps \
   --dataset /path/to/output_dataset/ \
   --max-drift-us 1.0
 ```
@@ -647,7 +647,7 @@ bagel audit-timestamps \
 特定 `video_key` だけ絞りたい場合:
 
 ```bash
-bagel audit-timestamps \
+rosbag2lerobot audit-timestamps \
   --dataset /path/to/output_dataset/ \
   --video-key observation.images.cam_high \
   --json-out /tmp/audit.json
@@ -656,7 +656,7 @@ bagel audit-timestamps \
 ### 13. 未知ロボットの config を雛形生成
 
 ```bash
-bagel scaffold \
+rosbag2lerobot scaffold \
   --bags /path/to/ros_sample_bag/ \
   -o configs/my_robot.yaml \
   --robot-type my_robot \
@@ -668,7 +668,7 @@ bagel scaffold \
 ### 14. 生成データセットの構造検証
 
 ```bash
-bagel validate-dataset \
+rosbag2lerobot validate-dataset \
   --dataset /path/to/output_dataset/ \
   --strict \
   --json-out /tmp/validate_dataset.json
@@ -677,7 +677,7 @@ bagel validate-dataset \
 ### 15. 生成データセットの品質スコアリング
 
 ```bash
-bagel quality-report \
+rosbag2lerobot quality-report \
   --dataset /path/to/output_dataset/ \
   -o /tmp/quality.json \
   --score-threshold 0.9
@@ -686,7 +686,7 @@ bagel quality-report \
 ### 16. クラッシュ後に安全に再変換（--resume）
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/my_robot.yaml \
   --bags /path/to/ros_sample_bag_dir/ \
   --output /path/to/output_dataset/ \
@@ -696,7 +696,7 @@ bagel convert \
 ### 17. 失敗を許容しつつ JSON サマリを取得（--skip-failed / --json）
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/my_robot.yaml \
   --bags /path/to/ros_sample_bag_dir/ \
   --output /path/to/output_dataset/ \
@@ -706,7 +706,7 @@ bagel convert \
 ### 18. HTML プレビューを生成
 
 ```bash
-bagel preview \
+rosbag2lerobot preview \
   --dataset /path/to/output_dataset/ \
   --n-frames 5 \
   --sample-video
@@ -715,7 +715,7 @@ bagel preview \
 ### 19. Hub へのアップロードを dry-run で確認
 
 ```bash
-bagel push-to-hub \
+rosbag2lerobot push-to-hub \
   --dataset /path/to/output_dataset/ \
   --repo-id myorg/my-dataset \
   --dry-run \

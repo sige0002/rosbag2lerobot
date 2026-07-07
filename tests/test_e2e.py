@@ -14,11 +14,11 @@ import pyarrow.parquet as pq
 import pytest
 from PIL import Image
 
-from bagel.config import FeatureMapping, RobotConfig, ResamplingConfig
-from bagel.decoders import decode
-from bagel.reader import BagReader
-from bagel.resampler import Resampler
-from bagel.writer import DatasetWriter
+from rosbag2lerobot.config import FeatureMapping, RobotConfig, ResamplingConfig
+from rosbag2lerobot.decoders import decode
+from rosbag2lerobot.reader import BagReader
+from rosbag2lerobot.resampler import Resampler
+from rosbag2lerobot.writer import DatasetWriter
 
 TEST_BAGS_DIR = Path(__file__).parent.parent / "test_bags"
 MANIPULATOR_BAG = TEST_BAGS_DIR / "manipulator_bag"

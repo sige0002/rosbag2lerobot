@@ -1,4 +1,4 @@
-"""Rosbag2 reader for bagel.
+"""Rosbag2 reader for rosbag2lerobot.
 
 Reads ROS2 bag files using the ``rosbags`` library (no rclpy dependency).
 Supports both SQLite3 (``.db3``) and MCAP storage backends.  Handles
@@ -21,7 +21,7 @@ from typing import Any, Generator
 from rosbags.rosbag2 import Reader
 from rosbags.typesys import Stores, get_typestore, get_types_from_msg
 
-from bagel.config import CustomMsgDef, RobotConfig
+from rosbag2lerobot.config import CustomMsgDef, RobotConfig
 
 logger = logging.getLogger(__name__)
 

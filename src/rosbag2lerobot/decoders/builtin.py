@@ -29,8 +29,8 @@ from typing import Any
 
 import numpy as np
 
-from bagel.decoders import register_decoder
-from bagel.transforms import quat_xyzw_to_euler
+from rosbag2lerobot.decoders import register_decoder
+from rosbag2lerobot.transforms import quat_xyzw_to_euler
 
 logger = logging.getLogger(__name__)
 

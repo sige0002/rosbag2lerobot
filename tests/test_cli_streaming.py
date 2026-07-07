@@ -2,13 +2,13 @@
 
 Covers the two helpers that replaced the old ``all_episodes`` accumulator:
 
-* :func:`bagel.cli._iter_episodes_serial` -- yields one episode at a
+* :func:`rosbag2lerobot.cli._iter_episodes_serial` -- yields one episode at a
   time in ``bag_paths`` order.
-* :func:`bagel.cli._iter_episodes_parallel` -- uses a ProcessPool
+* :func:`rosbag2lerobot.cli._iter_episodes_parallel` -- uses a ProcessPool
   internally, buffers out-of-order completions, and yields episodes in
   original ``bag_paths`` order regardless of completion order.
 
-Also pins down that :func:`bagel.writer.write_dataset` accepts an
+Also pins down that :func:`rosbag2lerobot.writer.write_dataset` accepts an
 arbitrary iterator (e.g. ``iter([...])``) and consumes it lazily via
 :func:`itertools.chain` on top of ``next()`` on the first episode.
 """
@@ -24,9 +24,9 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from bagel import cli as cli_module
-from bagel.cli import _iter_episodes_parallel, _iter_episodes_serial
-from bagel.config import SplitConfig
+from rosbag2lerobot import cli as cli_module
+from rosbag2lerobot.cli import _iter_episodes_parallel, _iter_episodes_serial
+from rosbag2lerobot.config import SplitConfig
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ from bagel.config import SplitConfig
 
 
 class _FakeResampler:
-    """Minimal stand-in for :class:`bagel.resampler.Resampler`.
+    """Minimal stand-in for :class:`rosbag2lerobot.resampler.Resampler`.
 
     ``_iter_episodes_parallel`` extracts ``fps`` / ``policy`` / ``tolerance_ms``
     from the passed resampler to rebuild it inside each worker. We never
@@ -425,8 +425,8 @@ class TestWriteDatasetAcceptsIterator:
     def test_accepts_iter_of_lists(self, tmp_path: Path) -> None:
         """Two synthetic episodes, passed as ``iter([...])``, must produce
         a valid dataset with no errors."""
-        pytest.importorskip("bagel.writer")
-        from bagel.writer import write_dataset
+        pytest.importorskip("rosbag2lerobot.writer")
+        from rosbag2lerobot.writer import write_dataset
 
         # Build a minimal RobotConfig-compatible object. We only touch
         # the fields that write_dataset reads.
@@ -491,8 +491,8 @@ class TestWriteDatasetAcceptsIterator:
     def test_empty_iterator_returns_without_error(self, tmp_path: Path) -> None:
         """An empty episode stream must short-circuit cleanly (no writer
         is constructed, no metadata is written)."""
-        pytest.importorskip("bagel.writer")
-        from bagel.writer import write_dataset
+        pytest.importorskip("rosbag2lerobot.writer")
+        from rosbag2lerobot.writer import write_dataset
 
         class _Cfg:
             def __init__(self) -> None:

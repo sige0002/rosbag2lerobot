@@ -1,4 +1,4 @@
-"""Diagnostic helpers for bagel.
+"""Diagnostic helpers for rosbag2lerobot.
 
 Pure functions that support the ``inspect --fps-stats``,
 ``inspect --suggest-image-size``, and ``validate-config`` CLI features.
@@ -17,9 +17,9 @@ from typing import Any, Optional
 
 import numpy as np
 
-from bagel.config import FeatureMapping, RobotConfig
-from bagel.decoders import decode
-from bagel.reader import BagReader
+from rosbag2lerobot.config import FeatureMapping, RobotConfig
+from rosbag2lerobot.decoders import decode
+from rosbag2lerobot.reader import BagReader
 
 logger = logging.getLogger(__name__)
 

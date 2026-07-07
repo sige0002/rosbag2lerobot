@@ -48,9 +48,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from PIL import Image
 
-from bagel.config import RobotConfig, compute_splits
-from bagel.stats import StatsComputer
-from bagel.task_spec import (
+from rosbag2lerobot.config import RobotConfig, compute_splits
+from rosbag2lerobot.stats import StatsComputer
+from rosbag2lerobot.task_spec import (
     SubtaskSpan,
     subtask_for_timestamp,
     validate_subtask_coverage,

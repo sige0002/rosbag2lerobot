@@ -24,11 +24,11 @@ from unittest import mock
 
 import pytest
 
-from bagel.cli import _detect_nvenc
+from rosbag2lerobot.cli import _detect_nvenc
 
 
 class TestDetectNvenc:
-    """Unit tests for :func:`bagel.cli._detect_nvenc`."""
+    """Unit tests for :func:`rosbag2lerobot.cli._detect_nvenc`."""
 
     def test_returns_true_when_nvenc_present(self) -> None:
         """ffmpeg stdout advertises h264_nvenc → detector must return True."""
@@ -41,7 +41,7 @@ class TestDetectNvenc:
         fake_result = mock.MagicMock()
         fake_result.stdout = fake_stdout
         with mock.patch(
-            "bagel.cli.subprocess.run",
+            "rosbag2lerobot.cli.subprocess.run",
             return_value=fake_result,
         ) as run_mock:
             assert _detect_nvenc() is True
@@ -57,7 +57,7 @@ class TestDetectNvenc:
         fake_result = mock.MagicMock()
         fake_result.stdout = "Encoders:\n V..... libx264 libx264 H.264 / AVC\n"
         with mock.patch(
-            "bagel.cli.subprocess.run",
+            "rosbag2lerobot.cli.subprocess.run",
             return_value=fake_result,
         ) as run_mock:
             _detect_nvenc()
@@ -72,7 +72,7 @@ class TestDetectNvenc:
             raise FileNotFoundError("ffmpeg not on PATH")
 
         with mock.patch(
-            "bagel.cli.subprocess.run",
+            "rosbag2lerobot.cli.subprocess.run",
             side_effect=_raise_missing,
         ):
             assert _detect_nvenc() is False
@@ -84,7 +84,7 @@ class TestDetectNvenc:
             raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=10)
 
         with mock.patch(
-            "bagel.cli.subprocess.run",
+            "rosbag2lerobot.cli.subprocess.run",
             side_effect=_raise_timeout,
         ):
             assert _detect_nvenc() is False
@@ -92,7 +92,7 @@ class TestDetectNvenc:
 
 # TODO (worker-test):
 # - Add CliRunner-based tests for ``--video-codec auto`` that patch
-#   ``bagel.cli._detect_nvenc`` to force each branch
+#   ``rosbag2lerobot.cli._detect_nvenc`` to force each branch
 #   (auto→h264_nvenc, auto→libx264, --gpu without NVENC raises
 #   click.UsageError, --no-gpu with explicit _nvenc codec raises
 #   click.UsageError, --gpu with non-NVENC codec logs warning).

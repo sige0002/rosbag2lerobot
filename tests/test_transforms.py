@@ -1,4 +1,4 @@
-"""Unit tests for src/bagel/transforms.py (quaternion math + TransformLookup)."""
+"""Unit tests for src/rosbag2lerobot/transforms.py (quaternion math + TransformLookup)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from bagel.transforms import (
+from rosbag2lerobot.transforms import (
     TransformLookup,
     matrix_to_quat,
     quat_to_matrix,

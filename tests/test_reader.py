@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from bagel.reader import extract_header_stamp_ns
+from rosbag2lerobot.reader import extract_header_stamp_ns
 
 
 def _msg_with_stamp(sec: int, nanosec: int) -> SimpleNamespace:

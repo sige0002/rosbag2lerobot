@@ -1,8 +1,8 @@
-"""ROS1 ``.bag`` to ROS2 MCAP conversion for bagel.
+"""ROS1 ``.bag`` to ROS2 MCAP conversion for rosbag2lerobot.
 
-bagel's reader only handles ROS2 bags (mcap/sqlite3).  ROS1 ``.bag``
+rosbag2lerobot's reader only handles ROS2 bags (mcap/sqlite3).  ROS1 ``.bag``
 recordings (e.g. the airoa raw dataset) must be converted to ROS2 MCAP
-before they can be fed to ``bagel convert``.
+before they can be fed to ``rosbag2lerobot convert``.
 
 This module wraps the conversion API of the ``rosbags`` library (already a
 runtime dependency) -- the same code path used by the ``rosbags-convert``

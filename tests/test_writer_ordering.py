@@ -19,8 +19,8 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-from bagel.config import FeatureMapping, RobotConfig
-from bagel.writer import write_dataset
+from rosbag2lerobot.config import FeatureMapping, RobotConfig
+from rosbag2lerobot.writer import write_dataset
 
 
 def _episode(num_frames: int = 3) -> list[dict]:

@@ -26,7 +26,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from bagel.decoders import register_array_decoder, register_decoder
+from rosbag2lerobot.decoders import register_array_decoder, register_decoder
 
 logger = logging.getLogger(__name__)
 

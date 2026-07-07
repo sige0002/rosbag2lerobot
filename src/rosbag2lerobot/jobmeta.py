@@ -3,7 +3,7 @@
 Pure aggregation for the ``meta/job_summary.json`` file written after a
 conversion run, plus the per-episode result record the CLI accumulates while
 iterating bags. The summary feeds both the human progress/summary output and
-the conversion manifest (:mod:`bagel.manifest`), which reads per-bag
+the conversion manifest (:mod:`rosbag2lerobot.manifest`), which reads per-bag
 ``frame_count`` / ``processing_time_s`` from the same :class:`EpisodeResult`
 list.
 

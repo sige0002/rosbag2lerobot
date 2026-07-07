@@ -1,4 +1,4 @@
-"""Unit tests for ``bagel scaffold`` and :func:`bagel.config.config_to_yaml`.
+"""Unit tests for ``rosbag2lerobot scaffold`` and :func:`rosbag2lerobot.config.config_to_yaml`.
 
 Covers the pure mapping heuristics (slug derivation, collision dedup, fps
 pick, decoder-availability annotation) and the YAML round-trip guarantee on
@@ -16,20 +16,20 @@ from click.testing import CliRunner
 from rosbags.rosbag2 import Writer
 from rosbags.typesys import Stores, get_types_from_msg, get_typestore
 
-from bagel.cli import (
+from rosbag2lerobot.cli import (
     _dedupe_key,
     _pick_target_fps,
     _scaffold_from_topics,
     _slug_from_topic,
     main,
 )
-from bagel.config import (
+from rosbag2lerobot.config import (
     FeatureMapping,
     RobotConfig,
     config_to_yaml,
     load_config,
 )
-from bagel.reader import TopicInfo
+from rosbag2lerobot.reader import TopicInfo
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +467,7 @@ class TestConfigToYaml:
         assert loaded.actions == []
 
     def test_non_default_resampling_emitted(self, tmp_path: Path) -> None:
-        from bagel.config import ResamplingConfig
+        from rosbag2lerobot.config import ResamplingConfig
 
         cfg = RobotConfig(
             robot_type="rig",

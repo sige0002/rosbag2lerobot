@@ -1,4 +1,4 @@
-"""Time synchronisation and fixed-fps resampling for bagel.
+"""Time synchronisation and fixed-fps resampling for rosbag2lerobot.
 
 Takes streams of timestamped messages from multiple ROS topics and produces
 a sequence of fixed-rate frames where every feature key has a value.

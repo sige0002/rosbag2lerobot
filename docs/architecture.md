@@ -1,6 +1,6 @@
 # アーキテクチャと内部処理
 
-`bagel` が ROS2 rosbag を LeRobot v3.0 データセットに変換する仕組みを、モジュール単位でまとめます。拡張・デバッグ・内部挙動の理解が必要な方向け。
+`rosbag2lerobot` が ROS2 rosbag を LeRobot v3.0 データセットに変換する仕組みを、モジュール単位でまとめます。拡張・デバッグ・内部挙動の理解が必要な方向け。
 
 ## 目次
 
@@ -215,7 +215,7 @@ finalize()
 
 ### PR #3239 互換のタイムスタンプ丸め
 
-`meta/episodes/*.parquet` の `from_timestamp` / `to_timestamp` は float32 で、長尺データセットで累積ドリフトすると `FrameTimestampError` を誘発します。bagel は各値を `round(x, 6)` でマイクロ秒丸めし、次エピソードのオフセットにもその丸め値を繰り越すことで累積誤差を 1e-6 s に制限しています（LeRobot 本家 PR #3239 と同挙動）。
+`meta/episodes/*.parquet` の `from_timestamp` / `to_timestamp` は float32 で、長尺データセットで累積ドリフトすると `FrameTimestampError` を誘発します。rosbag2lerobot は各値を `round(x, 6)` でマイクロ秒丸めし、次エピソードのオフセットにもその丸め値を繰り越すことで累積誤差を 1e-6 s に制限しています（LeRobot 本家 PR #3239 と同挙動）。
 
 ## 統計 (`stats.py`)
 

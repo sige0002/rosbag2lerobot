@@ -1,6 +1,6 @@
 # 設定ファイルリファレンス
 
-変換の挙動はすべて YAML で定義します。完全版テンプレートは `src/bagel/configs/robot_template.yaml`。
+変換の挙動はすべて YAML で定義します。完全版テンプレートは `src/rosbag2lerobot/configs/robot_template.yaml`。
 
 ## 目次
 
@@ -182,7 +182,7 @@ custom_msgs:
 
 - `msg_file` のパスは YAML のあるディレクトリからの相対パスで解決。
 - **bag 埋め込み msgdef が優先**。`custom_msgs` はその機能が無い古い bag への保険。詳しくは [`architecture.md`](architecture.md#型システムとmsg登録-readerpy)。
-- 登録前に構文チェックしたければ `bagel validate-msg --msg <path>`。
+- 登録前に構文チェックしたければ `rosbag2lerobot validate-msg --msg <path>`。
 
 ## オプショナルトピック
 
@@ -259,10 +259,10 @@ def decode_custom_state(
 
 ### 3. 組み込みデコーダとして追加（恒久対応）
 
-`src/bagel/decoders/builtin.py` などに追加し `@register_decoder` で登録。
+`src/rosbag2lerobot/decoders/builtin.py` などに追加し `@register_decoder` で登録。
 
 ```python
-from bagel.decoders import register_decoder
+from rosbag2lerobot.decoders import register_decoder
 
 @register_decoder("my_pkg/msg/CustomState")
 def decode_custom_state(msg, selector, config):

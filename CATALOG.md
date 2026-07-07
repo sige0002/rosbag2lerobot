@@ -1,6 +1,6 @@
 # CATALOG — 実行カタログ
 
-bagel の実行方法早見表。詳細は [`README.md`](README.md) / [`README_ja.md`](README_ja.md) / [`docs/`](docs/README.md)。
+rosbag2lerobot の実行方法早見表。詳細は [`README.md`](README.md) / [`README_ja.md`](README_ja.md) / [`docs/`](docs/README.md)。
 
 ## セットアップ
 
@@ -10,17 +10,17 @@ uv pip install -e ".[dev]"     # dev = pytest, pytest-cov
 sudo apt-get install ffmpeg    # 動画エンコードに必須
 ```
 
-## CLI（`bagel <command>`）
+## CLI（`rosbag2lerobot <command>`）
 
 | コマンド | 用途 | 最小実行例 |
 |---|---|---|
-| `convert` | bag → LeRobot v3.0 データセット | `bagel convert --config configs/hsr.yaml --bags <bags>/ --output <out>/` |
-| `inspect` | topic・件数・時間範囲を表示 | `bagel inspect --bags <bags>/` |
-| `inspect --fps-stats` | topic ごとの FPS / 先頭末尾ラグ / ギャップ | `bagel inspect --bags <bags>/ --fps-stats` |
-| `validate-config` | YAML と bag の整合性検査 | `bagel validate-config --config configs/hsr.yaml --bags <bags>/` |
-| `validate-msg` | `.msg` 構文チェック | `bagel validate-msg --msg msgs/my_robot/MyType.msg` |
-| `audit-timestamps` | 生成データセットの timestamp 連続性監査 | `bagel audit-timestamps --dataset <out>/` |
-| `to-mcap` | ROS1 `.bag` → ROS2 MCAP に事前変換 | `bagel to-mcap <src>.bag -o <out>/` |
+| `convert` | bag → LeRobot v3.0 データセット | `rosbag2lerobot convert --config configs/hsr.yaml --bags <bags>/ --output <out>/` |
+| `inspect` | topic・件数・時間範囲を表示 | `rosbag2lerobot inspect --bags <bags>/` |
+| `inspect --fps-stats` | topic ごとの FPS / 先頭末尾ラグ / ギャップ | `rosbag2lerobot inspect --bags <bags>/ --fps-stats` |
+| `validate-config` | YAML と bag の整合性検査 | `rosbag2lerobot validate-config --config configs/hsr.yaml --bags <bags>/` |
+| `validate-msg` | `.msg` 構文チェック | `rosbag2lerobot validate-msg --msg msgs/my_robot/MyType.msg` |
+| `audit-timestamps` | 生成データセットの timestamp 連続性監査 | `rosbag2lerobot audit-timestamps --dataset <out>/` |
+| `to-mcap` | ROS1 `.bag` → ROS2 MCAP に事前変換 | `rosbag2lerobot to-mcap <src>.bag -o <out>/` |
 
 ### convert の主要オプション
 
@@ -30,11 +30,11 @@ sudo apt-get install ffmpeg    # 動画エンコードに必須
 
 ```bash
 # NVENC 自動検出 + 4 並列
-bagel convert --config configs/hsr.yaml --bags <bags>/ --output <out>/ --video-codec auto --workers 4
+rosbag2lerobot convert --config configs/hsr.yaml --bags <bags>/ --output <out>/ --video-codec auto --workers 4
 # CPU 固定（再現性重視）
-bagel convert --config configs/hsr.yaml --bags <bags>/ --output <out>/ --no-gpu
+rosbag2lerobot convert --config configs/hsr.yaml --bags <bags>/ --output <out>/ --no-gpu
 # 書き込まず検証のみ
-bagel convert --config configs/hsr.yaml --bags <bags>/ --output /tmp/dry --dry-run
+rosbag2lerobot convert --config configs/hsr.yaml --bags <bags>/ --output /tmp/dry --dry-run
 ```
 
 ## テスト / リント

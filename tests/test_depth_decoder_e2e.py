@@ -51,7 +51,7 @@ def _first_message(bag: Path, topic: str) -> Any:
 
 def _depth_config() -> Any:
     """Load hsr.yaml and append the optional head_depth feature for 235210."""
-    from bagel.config import FeatureMapping, load_config
+    from rosbag2lerobot.config import FeatureMapping, load_config
 
     cfg = load_config(HSR_CONFIG)
     cfg.fps = 10
@@ -100,7 +100,7 @@ def _ffprobe_nb_frames(path: Path) -> int:
 class TestDepthDecodeReal:
     def test_compressed_depth_rvl_real_frame(self) -> None:
         _require(HSR_BAG)
-        from bagel.decoders.image import (
+        from rosbag2lerobot.decoders.image import (
             _decode_compressed_depth,
             decode_compressed_image,
         )
@@ -125,7 +125,7 @@ class TestDepthDecodeReal:
 
     def test_raw_mono16_and_bgr8_real(self) -> None:
         _require(SAMPLE_BAG)
-        from bagel.decoders.image import decode_image
+        from rosbag2lerobot.decoders.image import decode_image
 
         depth_msg = _first_message(SAMPLE_BAG, "/camera/depth/image_raw0")
         assert depth_msg.encoding.lower() == "mono16"
@@ -149,9 +149,9 @@ class TestDepthConvertReal:
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             pytest.skip("ffmpeg/ffprobe not available")
 
-        from bagel.cli import _process_episode
-        from bagel.resampler import Resampler
-        from bagel.writer import write_dataset
+        from rosbag2lerobot.cli import _process_episode
+        from rosbag2lerobot.resampler import Resampler
+        from rosbag2lerobot.writer import write_dataset
 
         cfg = _depth_config()
         resampler = Resampler(

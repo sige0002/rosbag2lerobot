@@ -42,7 +42,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-# bagel is imported lazily inside helpers/tests so module collection never
+# rosbag2lerobot is imported lazily inside helpers/tests so module collection never
 # imports the package at import time.
 
 # ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ def _load_hsr_config(
     configs/*.yaml are never mutated on disk: we tweak the in-memory
     RobotConfig (its ResamplingConfig is replaced via dataclasses.replace).
     """
-    from bagel.config import load_config
+    from rosbag2lerobot.config import load_config
 
     cfg = load_config(HSR_CONFIG)
     rs_kwargs: dict[str, Any] = {
@@ -110,8 +110,8 @@ def _load_hsr_config(
 
 def _process(bag: Path, cfg: Any) -> list[dict]:
     """Run the production per-episode pipeline and return resampled frames."""
-    from bagel.cli import _process_episode
-    from bagel.resampler import Resampler
+    from rosbag2lerobot.cli import _process_episode
+    from rosbag2lerobot.resampler import Resampler
 
     resampler = Resampler(
         fps=cfg.fps,
@@ -133,7 +133,7 @@ def _convert_inproc(
     writer aggregates into a single mp4 per camera — exactly the
     0o600-regression surface.
     """
-    from bagel.writer import write_dataset
+    from rosbag2lerobot.writer import write_dataset
 
     def _episodes() -> Any:
         for _ in range(n_episodes):
@@ -232,13 +232,13 @@ class TestFfmpegNoStdin:
           -nostdin + DEVNULL),
       (b) a smoke conversion that must complete cleanly.
     Final confirmation that the terminal stays usable after a real
-    ``bagel convert`` is left to the user (see the Wave 2 runbook).
+    ``rosbag2lerobot convert`` is left to the user (see the Wave 2 runbook).
     """
 
     def test_ffmpeg_calls_pin_stdin_away_from_tty(self) -> None:
         """Static source check on writer.py's encoder ffmpeg call + cli probe."""
-        writer_src = (PROJECT_ROOT / "src" / "bagel" / "writer.py").read_text()
-        cli_src = (PROJECT_ROOT / "src" / "bagel" / "cli.py").read_text()
+        writer_src = (PROJECT_ROOT / "src" / "rosbag2lerobot" / "writer.py").read_text()
+        cli_src = (PROJECT_ROOT / "src" / "rosbag2lerobot" / "cli.py").read_text()
         # The writer's only ffmpeg invocation is the streaming encoder, whose
         # stdin is the frame pipe (never the TTY).
         assert "stdin=subprocess.PIPE" in writer_src, (
@@ -366,7 +366,7 @@ class TestMaxStampDelayDrop:
         baseline = _process(HSR_BAG, _load_hsr_config(max_stamp_delay_ms=None))
         assert baseline, "baseline (None) produced an empty episode"
 
-        with caplog.at_level(logging.INFO, logger="bagel"):
+        with caplog.at_level(logging.INFO, logger="rosbag2lerobot"):
             strict = _process(HSR_BAG, _load_hsr_config(max_stamp_delay_ms=50.0))
 
         assert len(strict) <= len(baseline), (
@@ -393,7 +393,7 @@ def test_resampling_config_has_alignment_fields() -> None:
 
     Defaults per config.py: align_to_required=True, max_stamp_delay_ms=None.
     """
-    from bagel.config import ResamplingConfig
+    from rosbag2lerobot.config import ResamplingConfig
 
     rc = ResamplingConfig()
     assert hasattr(rc, "align_to_required")
@@ -404,5 +404,5 @@ def test_resampling_config_has_alignment_fields() -> None:
 
 def test_video_permission_constant_is_world_rw() -> None:
     """writer.py normalises produced mp4 permissions to 0o666."""
-    src = (PROJECT_ROOT / "src" / "bagel" / "writer.py").read_text()
+    src = (PROJECT_ROOT / "src" / "rosbag2lerobot" / "writer.py").read_text()
     assert "0o666" in src, "writer.py should chmod produced mp4 to 0o666"

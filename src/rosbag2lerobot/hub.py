@@ -9,7 +9,7 @@ Two concerns, cleanly split:
   the card without any network access (a dry-run plan), and
   :func:`push_to_hub` is the *only* function that touches the network.
 
-The card's license / tags are hardcoded (apache-2.0, robotics, LeRobot/bagel)
+The card's license / tags are hardcoded (apache-2.0, robotics, LeRobot/rosbag2lerobot)
 per the spec — no speculative config knobs.
 """
 
@@ -22,7 +22,7 @@ from typing import Any
 
 import pyarrow.parquet as pq
 
-from bagel.quality import _read_info
+from rosbag2lerobot.quality import _read_info
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ def build_dataset_card(info: dict[str, Any], tasks: list[str]) -> str:
         "- robotics\n"
         "tags:\n"
         "- LeRobot\n"
-        "- bagel\n"
+        "- rosbag2lerobot\n"
         "configs:\n"
         "- config_name: default\n"
         "  data_files: data/*/*.parquet\n"
@@ -105,7 +105,7 @@ def build_dataset_card(info: dict[str, Any], tasks: list[str]) -> str:
     body = (
         f"# {robot} (LeRobot dataset)\n\n"
         "Converted from ROS2 rosbags with "
-        "[bagel](https://github.com/) to the LeRobot Dataset v3.0 format.\n\n"
+        "[rosbag2lerobot](https://github.com/) to the LeRobot Dataset v3.0 format.\n\n"
         f"{summary}\n"
         f"{tasks_section}\n"
         f"{features_section}"

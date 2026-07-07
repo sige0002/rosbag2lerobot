@@ -1,5 +1,5 @@
 name: Bug report
-description: Report unexpected behavior, a crash, or incorrect output from bagel.
+description: Report unexpected behavior, a crash, or incorrect output from rosbag2lerobot.
 title: "[bug]: "
 labels: ["bug", "triage"]
 body:
@@ -14,7 +14,7 @@ body:
     attributes:
       label: Pre-submission checklist
       options:
-        - label: I have searched [existing issues](https://github.com/sige0002/bagel/issues?q=is%3Aissue) and this is not a duplicate.
+        - label: I have searched [existing issues](https://github.com/sige0002/rosbag2lerobot/issues?q=is%3Aissue) and this is not a duplicate.
           required: true
         - label: I am running the latest `main` (or a tagged release) and can reproduce the bug there.
           required: true
@@ -36,7 +36,7 @@ body:
       label: Steps to reproduce
       description: Minimal commands and inputs that reproduce the bug.
       placeholder: |
-        1. `bagel convert --config configs/hsr.yaml --bags /path/to/bags --output /tmp/out`
+        1. `rosbag2lerobot convert --config configs/hsr.yaml --bags /path/to/bags --output /tmp/out`
         2. `ls /tmp/out/videos/observation.images.front/chunk-000/`
         3. Frame count in mp4 is N-2, parquet is N.
       render: shell
@@ -85,7 +85,7 @@ body:
   - type: input
     id: commit
     attributes:
-      label: bagel commit / version
+      label: rosbag2lerobot commit / version
       description: Output of `git rev-parse --short HEAD` or the release tag.
       placeholder: "ec88065"
     validations:

@@ -137,7 +137,7 @@ def build_manifest(
     fps: int,
     config_snapshot: str,
     config_sha256: str,
-    bagel_version: str,
+    rosbag2lerobot_version: str,
     ffmpeg_version: str | None,
     run_timestamp: str,
 ) -> dict[str, Any]:
@@ -157,7 +157,7 @@ def build_manifest(
         fps: Dataset frames-per-second.
         config_snapshot: Full text of the config YAML used for the run.
         config_sha256: SHA-256 hex digest of the config YAML bytes.
-        bagel_version: ``bagel.__version__`` of the running tool.
+        rosbag2lerobot_version: ``rosbag2lerobot.__version__`` of the running tool.
         ffmpeg_version: ffmpeg version line (``None`` if unavailable).
         run_timestamp: ISO-8601 UTC timestamp string for the run.
 
@@ -165,7 +165,7 @@ def build_manifest(
         A JSON-serializable manifest dict.
     """
     return {
-        "bagel_version": bagel_version,
+        "rosbag2lerobot_version": rosbag2lerobot_version,
         "ffmpeg_version": ffmpeg_version,
         "run_timestamp": run_timestamp,
         "codec": codec,

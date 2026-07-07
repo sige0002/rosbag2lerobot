@@ -295,7 +295,7 @@ class TestMultiTopicSync:
 
 import math  # noqa: E402 (test-local helpers intentionally below class defs)
 
-from bagel.resampler import (  # noqa: E402
+from rosbag2lerobot.resampler import (  # noqa: E402
     Resampler,
     _bisect_right_ts,
 )
@@ -512,8 +512,8 @@ class TestResamplerVectorisedEquivalence:
 from pathlib import Path  # noqa: E402
 from unittest import mock  # noqa: E402
 
-from bagel.cli import _required_window, _process_episode  # noqa: E402
-from bagel.config import FeatureMapping, RobotConfig, ResamplingConfig  # noqa: E402
+from rosbag2lerobot.cli import _required_window, _process_episode  # noqa: E402
+from rosbag2lerobot.config import FeatureMapping, RobotConfig, ResamplingConfig  # noqa: E402
 
 
 class TestRequiredWindow:
@@ -645,9 +645,10 @@ class TestProcessEpisodeAlignment:
         )
 
         with (
-            mock.patch("bagel.cli.BagReader", return_value=reader),
+            mock.patch("rosbag2lerobot.cli.BagReader", return_value=reader),
             mock.patch(
-                "bagel.cli.decode", return_value=np.array([1.0], dtype=np.float32)
+                "rosbag2lerobot.cli.decode",
+                return_value=np.array([1.0], dtype=np.float32),
             ),
         ):
             return _process_episode(Path("/fake/bag"), cfg, resampler)
@@ -692,9 +693,10 @@ class TestProcessEpisodeAlignment:
         cfg = _two_feature_config(align_to_required=True)
         resampler = Resampler(fps=cfg.fps, policy="hold", tolerance_ms=50.0)
         with (
-            mock.patch("bagel.cli.BagReader", return_value=reader),
+            mock.patch("rosbag2lerobot.cli.BagReader", return_value=reader),
             mock.patch(
-                "bagel.cli.decode", return_value=np.array([1.0], dtype=np.float32)
+                "rosbag2lerobot.cli.decode",
+                return_value=np.array([1.0], dtype=np.float32),
             ),
         ):
             frames = _process_episode(Path("/fake/bag"), cfg, resampler)

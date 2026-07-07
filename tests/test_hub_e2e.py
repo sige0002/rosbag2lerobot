@@ -1,4 +1,4 @@
-"""Tests for :mod:`bagel.hub` (HuggingFace Hub push + dataset card).
+"""Tests for :mod:`rosbag2lerobot.hub` (HuggingFace Hub push + dataset card).
 
 Fast unit test covers the pure :func:`build_dataset_card`. CLI tests exercise
 the ``push-to-hub --dry-run`` path and the ``repo_id`` fallback. NO test ever
@@ -16,8 +16,8 @@ import pyarrow.parquet as pq
 import pytest
 from click.testing import CliRunner
 
-from bagel.cli import main
-from bagel.hub import build_dataset_card, plan_push
+from rosbag2lerobot.cli import main
+from rosbag2lerobot.hub import build_dataset_card, plan_push
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_DATASET = PROJECT_ROOT / "output" / "airoa_moma_mcap_hsr"

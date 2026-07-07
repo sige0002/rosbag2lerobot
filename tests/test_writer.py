@@ -1,4 +1,4 @@
-"""Tests for bagel.writer module."""
+"""Tests for rosbag2lerobot.writer module."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import pyarrow.parquet as pq
 import pytest
 from PIL import Image
 
-from bagel.task_spec import SubtaskSpan
-from bagel.writer import (
+from rosbag2lerobot.task_spec import SubtaskSpan
+from rosbag2lerobot.writer import (
     _CHUNKS_SIZE,
     _CODEC_LABEL_MAP,
     _DATA_FILES_SIZE_IN_MB,
@@ -499,7 +499,7 @@ class TestSizeBasedChunking:
         self, tmp_path: Path, simple_features: dict, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """With a small threshold, successive episodes rotate to new files."""
-        import bagel.writer as writer_mod
+        import rosbag2lerobot.writer as writer_mod
 
         # Force rotation after the very first episode by shrinking the threshold.
         monkeypatch.setattr(writer_mod, "_DATA_FILES_SIZE_IN_MB", 0)

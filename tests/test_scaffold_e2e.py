@@ -1,4 +1,4 @@
-"""End-to-end integration tests for ``bagel scaffold`` on real bags.
+"""End-to-end integration tests for ``rosbag2lerobot scaffold`` on real bags.
 
 Runs against unconfigured RealMan dual-arm bags from ``bagdata/`` (no shipped
 config). These bags are large and gitignored, so each test guards on the bag
@@ -27,8 +27,8 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from bagel.cli import main
-from bagel.config import load_config
+from rosbag2lerobot.cli import main
+from rosbag2lerobot.config import load_config
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BAGDATA_DIR = PROJECT_ROOT / "bagdata"

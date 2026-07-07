@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Question or usage help
-    url: https://github.com/sige0002/bagel/discussions
+    url: https://github.com/sige0002/rosbag2lerobot/discussions
     about: Use Discussions for general questions, design proposals, or help.

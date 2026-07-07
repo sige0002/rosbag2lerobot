@@ -1,4 +1,4 @@
-"""Tests for :mod:`bagel.preview` (read-only static HTML preview report).
+"""Tests for :mod:`rosbag2lerobot.preview` (read-only static HTML preview report).
 
 Fast unit tests cover the pure :func:`build_preview_html` builder with
 synthetic dicts (no I/O). Integration tests render the real dataset under
@@ -19,8 +19,8 @@ import pytest
 from click.testing import CliRunner
 from PIL import Image
 
-from bagel.cli import main
-from bagel.preview import build_preview_html, generate_preview
+from rosbag2lerobot.cli import main
+from rosbag2lerobot.preview import build_preview_html, generate_preview
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_DATASET = PROJECT_ROOT / "output" / "airoa_moma_mcap_hsr"
@@ -169,7 +169,7 @@ def _features(video_keys: list[str], shape: tuple[int, int, int]) -> dict[str, A
 
 
 def _write_tiny_dataset(out_dir: Path) -> None:
-    from bagel.writer import DatasetWriter
+    from rosbag2lerobot.writer import DatasetWriter
 
     shape = (32, 32, 3)
     vkey = "observation.images.cam"

@@ -1,9 +1,9 @@
 """Structural validator for generated LeRobot v3.0 datasets.
 
 This module inspects a finished dataset directory (the tree produced by
-:class:`bagel.writer.DatasetWriter`) and verifies that its files,
+:class:`rosbag2lerobot.writer.DatasetWriter`) and verifies that its files,
 ``meta/info.json`` keys, and parquet schemas conform to the LeRobot v3.0
-layout that :mod:`bagel.writer` emits.
+layout that :mod:`rosbag2lerobot.writer` emits.
 
 The check is **read-only** and never raises on a validation failure: every
 discrepancy is collected as a :class:`ValidationIssue` so a single pass
@@ -13,12 +13,12 @@ CLI layer maps to a setup-error exit code.
 
 Source-of-truth references:
 
-- ``meta/info.json`` keys and values: :meth:`bagel.writer.DatasetWriter._write_info_json`.
-- data parquet column types: :meth:`bagel.writer.DatasetWriter._build_data_table`.
-- episodes parquet columns: :meth:`bagel.writer.DatasetWriter._write_episodes_parquet`.
+- ``meta/info.json`` keys and values: :meth:`rosbag2lerobot.writer.DatasetWriter._write_info_json`.
+- data parquet column types: :meth:`rosbag2lerobot.writer.DatasetWriter._build_data_table`.
+- episodes parquet columns: :meth:`rosbag2lerobot.writer.DatasetWriter._write_episodes_parquet`.
 
 Scope is deliberately structural: it does not decode videos or cross-check
-mp4 frame counts (that is :mod:`bagel.quality`'s job). It answers the
+mp4 frame counts (that is :mod:`rosbag2lerobot.quality`'s job). It answers the
 question "is this a well-formed LeRobot v3.0 dataset on disk?".
 """
 
@@ -32,12 +32,12 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from bagel.audit import (
+from rosbag2lerobot.audit import (
     _collect_episodes_parquet,
     _discover_video_keys,
     _ensure_columns_present,
 )
-from bagel.writer import _CODEBASE_VERSION
+from rosbag2lerobot.writer import _CODEBASE_VERSION
 
 __all__ = [
     "ValidationIssue",
@@ -51,7 +51,7 @@ def video_feature_keys(info: dict[str, Any]) -> list[str]:
     """Return ``dtype == "video"`` feature keys from ``info`` in declaration order.
 
     Shared predicate for the inline ``features`` filters previously duplicated
-    across :mod:`bagel.quality`, :mod:`bagel.preview`, and this module. Lives
+    across :mod:`rosbag2lerobot.quality`, :mod:`rosbag2lerobot.preview`, and this module. Lives
     here (the lowest-coupling module: stdlib + pyarrow only) so importing it
     introduces no new heavy dependency chain or import cycle.
 
@@ -152,7 +152,7 @@ class ValidationIssue:
 class DatasetValidationReport:
     """Aggregate result of :func:`validate_dataset`.
 
-    Mirrors the :class:`bagel.diagnostics.ValidationReport` idiom: callers
+    Mirrors the :class:`rosbag2lerobot.diagnostics.ValidationReport` idiom: callers
     collect issues, then call :meth:`apply_verdict` with the CLI ``--strict``
     flag to populate ``verdict`` / ``exit_code``.
     """

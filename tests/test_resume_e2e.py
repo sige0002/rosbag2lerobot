@@ -51,7 +51,7 @@ def _convert_args(out: Path) -> list[str]:
 class TestResumeGuard:
     def test_overwrite_without_resume_errors(self, tmp_path: Path) -> None:
         _require()
-        from bagel.cli import main
+        from rosbag2lerobot.cli import main
 
         runner = CliRunner()
         out = tmp_path / "ds"
@@ -66,7 +66,7 @@ class TestResumeGuard:
 
     def test_resume_noop_on_complete(self, tmp_path: Path) -> None:
         _require()
-        from bagel.cli import main
+        from rosbag2lerobot.cli import main
 
         runner = CliRunner()
         out = tmp_path / "ds"
@@ -81,7 +81,7 @@ class TestResumeGuard:
 
     def test_resume_restarts_partial(self, tmp_path: Path) -> None:
         _require()
-        from bagel.cli import main
+        from rosbag2lerobot.cli import main
 
         runner = CliRunner()
         out = tmp_path / "ds"

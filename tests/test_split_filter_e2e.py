@@ -19,8 +19,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from bagel.cli import main
-from bagel.validation import validate_dataset
+from rosbag2lerobot.cli import main
+from rosbag2lerobot.validation import validate_dataset
 from click.testing import CliRunner
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

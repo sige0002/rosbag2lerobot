@@ -1,4 +1,4 @@
-"""Tests for :mod:`bagel.quality` (P0-5 quality-report).
+"""Tests for :mod:`rosbag2lerobot.quality` (P0-5 quality-report).
 
 Fast unit tests cover the pure metric functions (:func:`count_freeze_frames`,
 :func:`count_out_of_range`) and a CLI round-trip on a tiny real dataset built
@@ -19,15 +19,15 @@ import pytest
 from click.testing import CliRunner
 from PIL import Image
 
-from bagel.cli import main
-from bagel.quality import (
+from rosbag2lerobot.cli import main
+from rosbag2lerobot.quality import (
     QualityReport,
     _column_to_2d,
     compute_quality_report,
     count_freeze_frames,
     count_out_of_range,
 )
-from bagel.writer import DatasetWriter
+from rosbag2lerobot.writer import DatasetWriter
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_DATASET = PROJECT_ROOT / "output" / "airoa_moma_mcap_hsr"
@@ -84,7 +84,7 @@ def test_count_out_of_range_excludes_nan() -> None:
 
 
 def test_align_bounds_scalar_broadcast() -> None:
-    from bagel.quality import _align_bounds, count_out_of_range
+    from rosbag2lerobot.quality import _align_bounds, count_out_of_range
 
     # Scalar (0-d) bounds broadcast to the column width and then count OOR.
     lo, hi = _align_bounds(np.asarray(0.0), np.asarray(2.0), n_dims=3, key="f")
@@ -96,7 +96,7 @@ def test_align_bounds_scalar_broadcast() -> None:
 
 
 def test_align_bounds_length1_broadcast() -> None:
-    from bagel.quality import _align_bounds
+    from rosbag2lerobot.quality import _align_bounds
 
     lo, hi = _align_bounds(np.asarray([0.0]), np.asarray([2.0]), n_dims=4, key="f")
     assert lo is not None and hi is not None
@@ -107,7 +107,7 @@ def test_align_bounds_length1_broadcast() -> None:
 def test_align_bounds_dim_mismatch_skips(caplog) -> None:
     import logging
 
-    from bagel.quality import _align_bounds
+    from rosbag2lerobot.quality import _align_bounds
 
     # A 7-d bound against a 6-d column genuinely mismatches: do not silently
     # pass; return (None, None) and record a warning.
@@ -192,7 +192,7 @@ def test_column_to_2d_scalar_int64() -> None:
 
 
 def test_video_feature_keys_filters_and_orders() -> None:
-    from bagel.validation import video_feature_keys
+    from rosbag2lerobot.validation import video_feature_keys
 
     info = {
         "features": {

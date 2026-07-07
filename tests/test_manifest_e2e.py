@@ -1,6 +1,6 @@
 """E2E + unit tests for the conversion manifest (⑥, plan.md D-2).
 
-Unit tests prove :func:`bagel.manifest.build_manifest` is pure (an injected
+Unit tests prove :func:`rosbag2lerobot.manifest.build_manifest` is pure (an injected
 ``run_timestamp`` round-trips unchanged) and that :func:`sha256_of_path`
 matches a direct ``hashlib`` digest. The integration test converts the real
 ``bagdata/airoa-moma-mcap`` bags (7 episodes) and asserts the
@@ -17,9 +17,9 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-import bagel
-from bagel.cli import main
-from bagel.manifest import ManifestInput, build_manifest, sha256_of_path
+import rosbag2lerobot
+from rosbag2lerobot.cli import main
+from rosbag2lerobot.manifest import ManifestInput, build_manifest, sha256_of_path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_BAGS = PROJECT_ROOT / "bagdata" / "airoa-moma-mcap"
@@ -46,13 +46,13 @@ def test_build_manifest_is_pure() -> None:
         fps=10,
         config_snapshot="robot_type: x\n",
         config_sha256="cd" * 32,
-        bagel_version="9.9.9",
+        rosbag2lerobot_version="9.9.9",
         ffmpeg_version="ffmpeg version test",
         run_timestamp="FIXED",
     )
     # Injected timestamp passes through verbatim -> no datetime.now() inside.
     assert manifest["run_timestamp"] == "FIXED"
-    assert manifest["bagel_version"] == "9.9.9"
+    assert manifest["rosbag2lerobot_version"] == "9.9.9"
     assert manifest["total_episodes"] == 1
     assert manifest["total_frames"] == 10
     assert manifest["config_sha256"] == "cd" * 32
@@ -118,7 +118,7 @@ def test_conversion_log_real_bags(tmp_path: Path) -> None:
     log = json.loads((out / "meta" / "conversion_log.json").read_text())
     info = json.loads((out / "meta" / "info.json").read_text())
 
-    assert log["bagel_version"] == bagel.__version__
+    assert log["rosbag2lerobot_version"] == rosbag2lerobot.__version__
     assert log["total_episodes"] == 7
     assert info["total_episodes"] == 7
     assert len(log["inputs"]) == 7

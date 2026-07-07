@@ -151,7 +151,7 @@ def decode(
         return _DECODER_REGISTRY[msg_type](deserialized_msg, selector, config)
 
     # 3. Fallback to msg_parser generic decoder
-    from bagel.decoders.msg_parser import MsgDecoder, MsgParser
+    from rosbag2lerobot.decoders.msg_parser import MsgDecoder, MsgParser
 
     # Try to find a .msg file for this type
     parser = MsgParser()
@@ -198,5 +198,5 @@ def decode_array(
 
 
 # Import built-in decoders to trigger registration on module load
-import bagel.decoders.builtin  # noqa: E402, F401
-import bagel.decoders.image  # noqa: E402, F401
+import rosbag2lerobot.decoders.builtin  # noqa: E402, F401
+import rosbag2lerobot.decoders.image  # noqa: E402, F401

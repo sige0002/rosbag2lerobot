@@ -1,4 +1,4 @@
-"""Tests for the ROS1 .bag -> ROS2 MCAP conversion helpers (bagel.bagconvert).
+"""Tests for the ROS1 .bag -> ROS2 MCAP conversion helpers (rosbag2lerobot.bagconvert).
 
 These cover the pure path/detection helpers without invoking the (slow,
 data-dependent) rosbags conversion itself.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from bagel.bagconvert import (
+from rosbag2lerobot.bagconvert import (
     discover_ros1_bags,
     is_ros1_bag,
     output_name,

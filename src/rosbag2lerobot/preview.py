@@ -2,7 +2,7 @@
 
 Renders a single self-contained HTML page summarising a finished dataset:
 the summary (robot type / fps / episodes / frames / tasks), the quality score
-and per-feature/per-video quality tables (reusing :mod:`bagel.quality`), a
+and per-feature/per-video quality tables (reusing :mod:`rosbag2lerobot.quality`), a
 gallery of sampled video frames (inline base64 JPEGs, no external requests),
 and the numeric per-feature statistics from ``meta/stats.json``.
 
@@ -10,7 +10,7 @@ The page is intentionally *self-contained* — all CSS is inlined and every
 image is a ``data:`` URI — so it can be opened straight from disk or shipped
 to a reviewer without any server.
 
-Design split (mirroring :mod:`bagel.diagnostics` / :mod:`bagel.audit`):
+Design split (mirroring :mod:`rosbag2lerobot.diagnostics` / :mod:`rosbag2lerobot.audit`):
 
 - :func:`build_preview_html` is **pure**: it takes plain dicts in and returns
   an HTML string. It performs no I/O and never touches the filesystem, so the
@@ -35,13 +35,13 @@ from typing import Any
 
 import numpy as np
 
-from bagel.quality import (
+from rosbag2lerobot.quality import (
     _decode_video_frames,
     _load_stats,
     _read_info,
     compute_quality_report,
 )
-from bagel.validation import video_feature_keys
+from rosbag2lerobot.validation import video_feature_keys
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +225,7 @@ def build_preview_html(
         info: ``meta/info.json`` contents (robot_type / fps / totals /
             features).
         stats: ``meta/stats.json`` contents (per-feature min/max/mean/std/q50).
-        quality: :meth:`bagel.quality.QualityReport.to_dict` output (score,
+        quality: :meth:`rosbag2lerobot.quality.QualityReport.to_dict` output (score,
             verdict, per-feature and per-video tables).
         frames_b64: ``{video_key: [base64_jpeg, ...]}`` sample frames; each
             value becomes a row of inline ``data:image/jpeg;base64`` thumbnails.
@@ -247,10 +247,10 @@ def build_preview_html(
         '<html lang="en">\n<head>\n'
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f"<title>bagel preview — {robot}</title>\n"
+        f"<title>rosbag2lerobot preview — {robot}</title>\n"
         f"<style>{_STYLE}</style>\n"
         "</head>\n<body>\n"
-        f"<h1>bagel dataset preview — {robot}</h1>\n"
+        f"<h1>rosbag2lerobot dataset preview — {robot}</h1>\n"
         f"{body}\n"
         "</body>\n</html>\n"
     )
@@ -268,7 +268,7 @@ def _grab_sample_frames(
 ) -> dict[str, list[np.ndarray]]:
     """Decode the first ``n_per_video`` frames of each video key's first mp4.
 
-    Uses the streaming :func:`bagel.quality._decode_video_frames` generator and
+    Uses the streaming :func:`rosbag2lerobot.quality._decode_video_frames` generator and
     :func:`itertools.islice` so only the leading frames are decoded (a full
     decode is avoided). The first mp4 per key is the one at the lowest
     ``chunk-*/file-*`` lexicographic position.
@@ -359,7 +359,7 @@ def generate_preview(
     Args:
         dataset_dir: Root of a LeRobot v3.0 dataset.
         n_frames: Number of sample frames to embed per video key.
-        sample_video: Forwarded to :func:`bagel.quality.compute_quality_report`
+        sample_video: Forwarded to :func:`rosbag2lerobot.quality.compute_quality_report`
             for the *quality computation's* freeze-frame decode. The frame
             gallery is sampled independently regardless of this flag. Defaults
             to ``False``: the score stays meaningful and freeze metrics are

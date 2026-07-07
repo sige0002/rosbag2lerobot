@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from bagel.config import (
+from rosbag2lerobot.config import (
     CustomMsgDef,
     FeatureMapping,
     ResamplingConfig,
@@ -589,7 +589,10 @@ class TestComputeSplits:
 
 def _assert_passes_validation(splits: dict[str, str], total: int) -> None:
     """Assert ``splits`` is accepted by validation._check_splits_partition."""
-    from bagel.validation import DatasetValidationReport, _check_splits_partition
+    from rosbag2lerobot.validation import (
+        DatasetValidationReport,
+        _check_splits_partition,
+    )
 
     report = DatasetValidationReport(dataset="x")
     _check_splits_partition(splits, total, report)

@@ -1,1 +1,1 @@
-# Robot configuration YAML files for bagel.
+# Robot configuration YAML files for rosbag2lerobot.

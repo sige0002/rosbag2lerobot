@@ -1,4 +1,4 @@
-# bagel
+# rosbag2lerobot
 
 Convert ROS2 rosbag files to
 [LeRobot Dataset v3.0](https://huggingface.co/docs/lerobot) format.
@@ -14,8 +14,8 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 # Clone
-git clone https://github.com/sige0002/bagel.git
-cd bagel
+git clone https://github.com/sige0002/rosbag2lerobot.git
+cd rosbag2lerobot
 
 # Create venv and install
 uv venv .venv
@@ -44,13 +44,13 @@ Python packages (PyTorch, etc.) are required. See
 ### 1. Inspect a rosbag
 
 ```bash
-bagel inspect --bags /path/to/my_bag/
+rosbag2lerobot inspect --bags /path/to/my_bag/
 ```
 
 ### 2. Convert a single bag
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/my_bag/ \
   --output /path/to/output_dataset/
@@ -59,7 +59,7 @@ bagel convert \
 ### 3. Convert multiple bags (one episode per bag)
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/all_bags/ \
   --output /path/to/output_dataset/ \
@@ -70,7 +70,7 @@ bagel convert \
 ### 4. Dry run (validate without writing)
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/all_bags/ \
   --output /tmp/dry \
@@ -80,20 +80,20 @@ bagel convert \
 ### 5. Validate a custom .msg file
 
 ```bash
-bagel validate-msg --msg msgs/my_robot/MyType.msg
+rosbag2lerobot validate-msg --msg msgs/my_robot/MyType.msg
 ```
 
 ### 6. Scaffold a config for an unknown robot
 
 ```bash
-bagel scaffold --bags /path/to/all_bags/ -o configs/my_robot.yaml
+rosbag2lerobot scaffold --bags /path/to/all_bags/ -o configs/my_robot.yaml
 ```
 
 ### 7. Validate and score a generated dataset
 
 ```bash
-bagel validate-dataset --dataset /path/to/output_dataset/
-bagel quality-report   --dataset /path/to/output_dataset/ -o report.json
+rosbag2lerobot validate-dataset --dataset /path/to/output_dataset/
+rosbag2lerobot quality-report   --dataset /path/to/output_dataset/ -o report.json
 ```
 
 ## Commands
@@ -121,7 +121,7 @@ suppresses the bar and INFO logs, and `--skip-failed` records a failed bag and
 continues (the dataset finalizes from the good episodes) instead of aborting.
 Every run also writes two files under `meta/`: `conversion_log.json` (provenance
 — input SHA256, per-bag frame counts/timing, codec, config snapshot + hash,
-bagel/ffmpeg versions, run timestamp) and `job_summary.json` (success/fail
+rosbag2lerobot/ffmpeg versions, run timestamp) and `job_summary.json` (success/fail
 counts, throughput, byte sizes, per-worker / per-episode breakdown).
 
 **`--json` on report commands.** `validate-config`, `validate-dataset`,
@@ -180,7 +180,7 @@ enable it.
 ### NVENC (GPU) auto-detect
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/bags --output /path/to/out \
   --video-codec auto
@@ -189,7 +189,7 @@ bagel convert \
 ### Force CPU (libx264, reproducible)
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/bags --output /path/to/out \
   --no-gpu
@@ -198,7 +198,7 @@ bagel convert \
 ### Parallel workers (4 episodes at a time)
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/bags --output /path/to/out \
   --video-codec auto --workers 4
@@ -207,7 +207,7 @@ bagel convert \
 ### AV1 UHQ on Blackwell / DGX Spark
 
 ```bash
-bagel convert \
+rosbag2lerobot convert \
   --config configs/hsr.yaml \
   --bags /path/to/bags --output /path/to/out \
   --video-codec av1_nvenc --ffmpeg-preset p4

@@ -1,10 +1,10 @@
-"""Tests for bagel.stats module."""
+"""Tests for rosbag2lerobot.stats module."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from bagel.stats import StatsComputer
+from rosbag2lerobot.stats import StatsComputer
 
 
 class TestStatsComputerNumeric:

@@ -1,4 +1,4 @@
-"""bagel -- Convert ROS2 rosbag files to LeRobot Dataset v3.0 format.
+"""rosbag2lerobot -- Convert ROS2 rosbag files to LeRobot Dataset v3.0 format.
 
 This package provides a config-driven pipeline for converting ROS2 rosbag
 recordings into datasets compatible with the LeRobot v3.0 specification.

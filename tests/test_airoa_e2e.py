@@ -16,14 +16,14 @@ import pyarrow.parquet as pq
 import pytest
 from PIL import Image
 
-from bagel.config import (
+from rosbag2lerobot.config import (
     RobotConfig,
     load_config,
 )
-from bagel.decoders import decode
-from bagel.reader import BagReader
-from bagel.resampler import Resampler
-from bagel.writer import DatasetWriter
+from rosbag2lerobot.decoders import decode
+from rosbag2lerobot.reader import BagReader
+from rosbag2lerobot.resampler import Resampler
+from rosbag2lerobot.writer import DatasetWriter
 
 # ---------------------------------------------------------------------------
 # Paths

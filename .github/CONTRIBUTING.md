@@ -1,4 +1,4 @@
-# Contributing to bagel
+# Contributing to rosbag2lerobot
 
 Thanks for your interest in contributing! This document describes the
 process for reporting issues, proposing changes, and submitting pull
@@ -45,8 +45,8 @@ so we can align on the scope and design.
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/):
 
 ```bash
-git clone https://github.com/sige0002/bagel.git
-cd bagel
+git clone https://github.com/sige0002/rosbag2lerobot.git
+cd rosbag2lerobot
 uv venv .venv
 source .venv/bin/activate
 uv pip install -e ".[dev]"
@@ -66,7 +66,7 @@ dependency management.
 - **PEP 8** style, enforced by `ruff`
 - Run `uv run ruff check --fix src/ tests/` before committing
 - Prefer `pathlib.Path` over string paths
-- Keep functions small and focused; new modules go under `src/bagel/`
+- Keep functions small and focused; new modules go under `src/rosbag2lerobot/`
 - Comments explain **why**, not **what** — code and names carry the what
 
 ## Running tests
@@ -79,7 +79,7 @@ uv run pytest tests/ -q
 uv run pytest tests/ -q -m "not slow and not nvenc and not integration"
 
 # With coverage
-uv run pytest tests/ --cov=bagel --cov-report=term-missing
+uv run pytest tests/ --cov=rosbag2lerobot --cov-report=term-missing
 ```
 
 Marker semantics (registered in `pyproject.toml`):

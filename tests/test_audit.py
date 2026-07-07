@@ -1,4 +1,4 @@
-"""Tests for :mod:`bagel.audit` (F2 audit-timestamps).
+"""Tests for :mod:`rosbag2lerobot.audit` (F2 audit-timestamps).
 
 Mirrors the style of :mod:`tests.test_writer` and reuses the
 ``TestTimestampRoundingAcrossEpisodes`` fixture pattern so the audit runs
@@ -14,13 +14,13 @@ import pyarrow.parquet as pq
 import pytest
 from click.testing import CliRunner
 
-from bagel.audit import (
+from rosbag2lerobot.audit import (
     AuditReport,
     BoundaryError,
     audit_episode_timestamps,
 )
-from bagel.cli import main
-from bagel.writer import DatasetWriter
+from rosbag2lerobot.cli import main
+from rosbag2lerobot.writer import DatasetWriter
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +382,7 @@ def test_cli_audit_timestamps_bad_dataset(tmp_path: Path) -> None:
 
 
 def test_cli_audit_timestamps_help() -> None:
-    """``bagel audit-timestamps --help`` must succeed."""
+    """``rosbag2lerobot audit-timestamps --help`` must succeed."""
     runner = CliRunner()
     result = runner.invoke(main, ["audit-timestamps", "--help"])
     assert result.exit_code == 0

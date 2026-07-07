@@ -1,6 +1,6 @@
 """E2E + unit tests for the job summary / progress (⑧, plan.md D-3).
 
-Unit tests exercise :class:`bagel.jobmeta.JobSummary` math with injected wall
+Unit tests exercise :class:`rosbag2lerobot.jobmeta.JobSummary` math with injected wall
 time (so ``to_dict`` is deterministic) over a mix of success/failure results.
 The integration tests run the real converter with ``--workers 2`` and assert
 the ``meta/job_summary.json`` contents, plus ``--json`` (stdout JSON) and
@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from bagel.cli import main
-from bagel.jobmeta import EpisodeResult, JobSummary, dir_bytes
+from rosbag2lerobot.cli import main
+from rosbag2lerobot.jobmeta import EpisodeResult, JobSummary, dir_bytes
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_BAGS = PROJECT_ROOT / "bagdata" / "airoa-moma-mcap"

@@ -2,9 +2,9 @@
 
 Computes a small set of data-quality metrics over a finished dataset and
 condenses them into a 0..1 quality score plus a pass/fail verdict. Like
-:mod:`bagel.validation` the inspection is read-only.
+:mod:`rosbag2lerobot.validation` the inspection is read-only.
 
-Metrics (all source-of-truth references are to :mod:`bagel.writer`):
+Metrics (all source-of-truth references are to :mod:`rosbag2lerobot.writer`):
 
 - Per numeric feature null / NaN counts and null rate (data parquet).
 - Out-of-range counts, using ``meta/stats.json`` per-feature ``min`` / ``max``
@@ -42,8 +42,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from bagel.audit import _collect_episodes_parquet, _discover_video_keys
-from bagel.validation import video_feature_keys
+from rosbag2lerobot.audit import _collect_episodes_parquet, _discover_video_keys
+from rosbag2lerobot.validation import video_feature_keys
 
 logger = logging.getLogger(__name__)
 
@@ -396,7 +396,7 @@ def _column_to_2d(col: pa.ChunkedArray) -> tuple[np.ndarray, int]:
     ``to_numpy(zero_copy_only=False)`` maps every such null to ``NaN``. This
     avoids the per-scalar ``float()`` round-trip (≈1.4M calls on a 14-d feature
     over 100k frames) while producing a byte-identical result. The plain
-    variable-length ``list`` branch keeps the per-element fallback (bagel's
+    variable-length ``list`` branch keeps the per-element fallback (rosbag2lerobot's
     writer only emits fixed_size_list; this is defensive).
     """
     n_null = col.null_count
@@ -626,7 +626,7 @@ def compute_quality_report(
         score_threshold: Minimum score for an ``OK`` verdict.
         info: Pre-loaded ``meta/info.json`` contents. When ``None`` (default),
             it is read from disk; pass it to avoid re-reading when the caller
-            already has it (e.g. :func:`bagel.preview.generate_preview`).
+            already has it (e.g. :func:`rosbag2lerobot.preview.generate_preview`).
         stats: Pre-loaded ``meta/stats.json`` contents. When ``None``
             (default), it is read from disk (see ``info``).
 

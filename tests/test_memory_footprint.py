@@ -29,7 +29,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from bagel.writer import DatasetWriter
+from rosbag2lerobot.writer import DatasetWriter
 
 
 def _ffmpeg_available() -> bool:

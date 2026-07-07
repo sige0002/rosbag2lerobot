@@ -1,7 +1,7 @@
 """Timestamp drift auditor for generated LeRobot v3.0 datasets.
 
 This module inspects ``meta/episodes/*.parquet`` produced by
-:class:`bagel.writer.DatasetWriter` and verifies that the per-video
+:class:`rosbag2lerobot.writer.DatasetWriter` and verifies that the per-video
 ``from_timestamp`` / ``to_timestamp`` sequence is numerically self-consistent:
 
 1. Within a single mp4 file (identified by the pair ``(chunk_index,
@@ -15,7 +15,7 @@ This module inspects ``meta/episodes/*.parquet`` produced by
 Scope is deliberately narrower than ``verify-dataset`` (which cross-checks
 against real mp4 duration on disk): ``audit-timestamps`` only looks at the
 numerical continuity of the parquet rows, which is the invariant PR #3239
-fixed upstream in LeRobot and that :mod:`bagel.writer` preserves via
+fixed upstream in LeRobot and that :mod:`rosbag2lerobot.writer` preserves via
 ``round(..., _TIMESTAMP_ROUND_DECIMALS)`` carry-forward.
 """
 
@@ -29,7 +29,7 @@ import pyarrow.parquet as pq
 
 # Re-use the same rounding grain the writer uses so the auditor's tolerance
 # aligns with the authoritative definition of "correct" timestamps.
-from bagel.writer import _TIMESTAMP_ROUND_DECIMALS
+from rosbag2lerobot.writer import _TIMESTAMP_ROUND_DECIMALS
 
 
 __all__ = [

@@ -13,8 +13,8 @@
 ## プロジェクト構成
 
 ```
-bagel/
-├── src/bagel/
+rosbag2lerobot/
+├── src/rosbag2lerobot/
 │   ├── __init__.py
 │   ├── cli.py               # Click CLI (convert, inspect, validate-config, audit-timestamps, validate-msg)
 │   ├── config.py            # YAML ローダ＋データクラス
@@ -45,7 +45,7 @@ source .venv/bin/activate
 python -m pytest tests/ --tb=short -q
 
 # カバレッジ
-python -m pytest tests/ --cov=bagel --cov-report=term-missing
+python -m pytest tests/ --cov=rosbag2lerobot --cov-report=term-missing
 
 # 単一ファイル
 python -m pytest tests/test_config.py -v
@@ -107,7 +107,7 @@ ValueError: Topic /right/joint_states not found in bag
 
 YAML のトピック名と bag の実トピック名が一致していません。
 
-1. `bagel inspect --bags /path/to/ros_sample_bag/` で実トピック一覧を確認。
+1. `rosbag2lerobot inspect --bags /path/to/ros_sample_bag/` で実トピック一覧を確認。
 2. YAML のトピック名を修正（名前空間は大文字小文字を区別する）。
 3. 欠けることがあるトピックは `optional: true` にする。
 
@@ -121,7 +121,7 @@ TypeError: Cannot deserialize my_robot_msgs/msg/MyCustomMsg
 
 1. `msgs/<robot>/` 配下に `.msg` を置く。
 2. `custom_msgs` セクションに追加。
-3. `bagel validate-msg --msg <path>` で構文確認。
+3. `rosbag2lerobot validate-msg --msg <path>` で構文確認。
 
 ### リサンプリングで null が多量発生
 

@@ -30,7 +30,7 @@ import pyarrow.parquet as pq
 import pytest
 from PIL import Image
 
-from bagel.writer import DatasetWriter
+from rosbag2lerobot.writer import DatasetWriter
 
 
 # ---------------------------------------------------------------------------

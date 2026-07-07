@@ -1,4 +1,4 @@
-"""Tests for ``bagel.task_spec`` — task.json parsing + subtasks.
+"""Tests for ``rosbag2lerobot.task_spec`` — task.json parsing + subtasks.
 
 Covers:
 
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from bagel.task_spec import (
+from rosbag2lerobot.task_spec import (
     SubtaskSpan,
     TASK_SIDECAR_FILENAME,
     load_task_json,

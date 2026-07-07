@@ -1,5 +1,5 @@
 [project]
-name = "bagel"
+name = "rosbag2lerobot"
 version = "0.1.0"
 description = "ROS2 rosbag to LeRobot Dataset v3.0 converter"
 readme = "README.md"
@@ -26,14 +26,14 @@ dependencies = [
 ]
 
 [project.scripts]
-bagel = "bagel.cli:main"
+rosbag2lerobot = "rosbag2lerobot.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bagel"]
+packages = ["src/rosbag2lerobot"]
 
 [project.optional-dependencies]
 dev = [

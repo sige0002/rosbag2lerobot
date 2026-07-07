@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`bagel.diagnostics`.
+"""Unit tests for :mod:`rosbag2lerobot.diagnostics`.
 
 Covers :func:`compute_topic_fps_report`, :func:`detect_image_shape`,
 and :func:`validate_config_against_bag`, plus CLI integration for
@@ -19,15 +19,15 @@ from click.testing import CliRunner
 from rosbags.rosbag2 import Writer
 from rosbags.typesys import Stores, get_typestore
 
-from bagel.cli import main
-from bagel.config import FeatureMapping, RobotConfig
-from bagel.diagnostics import (
+from rosbag2lerobot.cli import main
+from rosbag2lerobot.config import FeatureMapping, RobotConfig
+from rosbag2lerobot.diagnostics import (
     ValidationReport,
     compute_topic_fps_report,
     detect_image_shape,
     validate_config_against_bag,
 )
-from bagel.reader import BagReader
+from rosbag2lerobot.reader import BagReader
 
 
 # ---------------------------------------------------------------------------
