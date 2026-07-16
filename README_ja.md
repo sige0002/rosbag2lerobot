@@ -92,8 +92,10 @@ rosbag2lerobot scaffold --bags /path/to/all_bags/ -o configs/my_robot.yaml
 ### 7. 生成データセットの検証とスコアリング
 
 ```bash
-rosbag2lerobot validate-dataset --dataset /path/to/output_dataset/
-rosbag2lerobot quality-report   --dataset /path/to/output_dataset/ -o report.json
+rosbag2lerobot validate-dataset         --dataset /path/to/output_dataset/
+rosbag2lerobot audit-timestamps         --dataset /path/to/output_dataset/
+rosbag2lerobot validate-video-metadata  --dataset /path/to/output_dataset/  # 学習前: mp4 フレーム数 ↔ metadata
+rosbag2lerobot quality-report           --dataset /path/to/output_dataset/ -o report.json
 ```
 
 ## コマンド一覧
@@ -107,6 +109,7 @@ rosbag2lerobot quality-report   --dataset /path/to/output_dataset/ -o report.jso
 | `validate-dataset` | 生成データセットが LeRobot Dataset v3.0 構造に準拠するか検証（ファイル / `info.json` / parquet スキーマ / 件数突き合わせ）。 |
 | `quality-report` | データ品質をスコアリング（null/NaN・範囲外・フリーズフレーム・動画↔データ整合）し 0..1 のレポートに集約。 |
 | `audit-timestamps` | 生成データセットのタイムスタンプ連続性を監査。 |
+| `validate-video-metadata` | LeRobot の学習時フレーム参照を FFmpeg ベースで再現し実 mp4 と照合（torch 非依存の学習前チェック。`--strict` で全 data 行を PTS 照合）。 |
 | `validate-msg` | `.msg` ファイルの構文チェック。 |
 | `preview` | データセットの自己完結型 HTML レポート（サマリ・品質・サンプルフレーム・統計）を生成。読み取り専用・サーバ不要。 |
 | `push-to-hub` | 生成データセットを HuggingFace Hub にアップロードし、データセットカードを自動生成（任意機能。`--dry-run` は計画のみ）。 |
@@ -125,9 +128,10 @@ rosbag2lerobot/ffmpeg バージョン・実行時刻）と `job_summary.json`（
 バイト数・ワーカー別/エピソード別の内訳）。
 
 **レポート系コマンドの `--json`.** `validate-config` / `validate-dataset` /
-`quality-report` / `audit-timestamps` / `inspect` / `validate-msg` / `to-mcap`
-はいずれも `--json` でレポート dict を stdout に出力できます（人間向け summary は
-抑制）。従来のファイル出力フラグ（`--json-out`、`-o`/`--report`）も引き続き使えます。
+`quality-report` / `audit-timestamps` / `validate-video-metadata` / `inspect` /
+`validate-msg` / `to-mcap` はいずれも `--json` でレポート dict を stdout に出力
+できます（人間向け summary は抑制）。従来のファイル出力フラグ（`--json-out`、
+`-o`/`--report`）も引き続き使えます。
 
 **config: split・TF 特徴量・タイポ検出.** `robot_config.yaml` の `split:` ブロック
 で `train`/`val`/`test` の比率（デフォルト `train=1.0`。単一 split で従来出力と

@@ -92,8 +92,10 @@ rosbag2lerobot scaffold --bags /path/to/all_bags/ -o configs/my_robot.yaml
 ### 7. Validate and score a generated dataset
 
 ```bash
-rosbag2lerobot validate-dataset --dataset /path/to/output_dataset/
-rosbag2lerobot quality-report   --dataset /path/to/output_dataset/ -o report.json
+rosbag2lerobot validate-dataset         --dataset /path/to/output_dataset/
+rosbag2lerobot audit-timestamps         --dataset /path/to/output_dataset/
+rosbag2lerobot validate-video-metadata  --dataset /path/to/output_dataset/  # pre-training: mp4 frames ↔ metadata
+rosbag2lerobot quality-report           --dataset /path/to/output_dataset/ -o report.json
 ```
 
 ## Commands
@@ -107,6 +109,7 @@ rosbag2lerobot quality-report   --dataset /path/to/output_dataset/ -o report.jso
 | `validate-dataset` | Verify a generated dataset conforms to LeRobot Dataset v3.0 (files, `info.json`, parquet schemas, cross-checks). |
 | `quality-report` | Score data quality (null/NaN, out-of-range, freeze frames, video↔data reconciliation) into a 0..1 report. |
 | `audit-timestamps` | Audit timestamp continuity of a generated dataset. |
+| `validate-video-metadata` | Reproduce LeRobot's per-row video frame lookup via FFmpeg and check it fits the real mp4 (torch-free pre-training gate; `--strict` validates every data row against per-frame PTS). |
 | `validate-msg` | Syntax-check a `.msg` file. |
 | `preview` | Write a self-contained static HTML report (summary, quality, sample frames, stats) for a dataset; read-only, no server. |
 | `push-to-hub` | Upload a generated dataset to the HuggingFace Hub with an auto-generated dataset card (opt-in; `--dry-run` plans only). |
@@ -125,9 +128,10 @@ rosbag2lerobot/ffmpeg versions, run timestamp) and `job_summary.json` (success/f
 counts, throughput, byte sizes, per-worker / per-episode breakdown).
 
 **`--json` on report commands.** `validate-config`, `validate-dataset`,
-`quality-report`, `audit-timestamps`, `inspect`, `validate-msg`, and `to-mcap`
-all accept `--json` to print their report dict to stdout (suppressing the human
-summary). The file flags (`--json-out`, `-o`/`--report`) still work.
+`quality-report`, `audit-timestamps`, `validate-video-metadata`, `inspect`,
+`validate-msg`, and `to-mcap` all accept `--json` to print their report dict to
+stdout (suppressing the human summary). The file flags (`--json-out`,
+`-o`/`--report`) still work.
 
 **Config: splits, TF features, typo detection.** A `split:` block in
 `robot_config.yaml` sets `train`/`val`/`test` ratios (default `train=1.0`, a

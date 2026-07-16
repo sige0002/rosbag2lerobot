@@ -30,6 +30,7 @@ plan.md
 memo.md
 plan/
 .claude/
+dev_docs/
 
 # Local rosbag data (never commit raw bags or converted datasets)
 bagdata/

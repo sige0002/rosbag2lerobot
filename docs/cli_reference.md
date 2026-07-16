@@ -11,6 +11,7 @@
 | [`validate-dataset`](#validate-dataset) | 生成済みデータセットが LeRobot Dataset v3.0 構造に準拠するか検証 |
 | [`quality-report`](#quality-report) | 生成済みデータセットのデータ品質をスコアリング |
 | [`audit-timestamps`](#audit-timestamps) | 生成済みデータセットの `meta/episodes/*.parquet` のタイムスタンプ連続性を監査 |
+| [`validate-video-metadata`](#validate-video-metadata) | 実 mp4 のフレーム数と episode metadata の参照範囲の整合性を軽量照合（学習前チェック） |
 | [`validate-msg`](#validate-msg) | `.msg` ファイルの構文チェック |
 | [`preview`](#preview) | 生成済みデータセットの自己完結型 HTML プレビューレポートを生成 |
 | [`push-to-hub`](#push-to-hub) | 生成済みデータセットを HuggingFace Hub にアップロード（データセットカード付き） |
@@ -38,6 +39,7 @@
 - [`validate-dataset`](#validate-dataset)
 - [`quality-report`](#quality-report)
 - [`audit-timestamps`](#audit-timestamps)
+- [`validate-video-metadata`](#validate-video-metadata)
 - [`validate-msg`](#validate-msg)
 - [`preview`](#preview)
 - [`push-to-hub`](#push-to-hub)
@@ -66,6 +68,7 @@ rosbag2lerobot [-v|--verbose] <subcommand> [OPTIONS]
 | [`validate-dataset`](#validate-dataset) | `DatasetValidationReport` の dict（issues / verdict / exit_code） |
 | [`quality-report`](#quality-report) | 品質レポート dict（per-feature 統計 / score / verdict） |
 | [`audit-timestamps`](#audit-timestamps) | `AuditReport` の dict |
+| [`validate-video-metadata`](#validate-video-metadata) | `VideoMetadataReport` の dict（errors / verdict / exit_code / mode / *_checked） |
 | [`inspect`](#inspect) | `--fps-stats` / `--suggest-image-size` のレポート dict |
 | [`validate-msg`](#validate-msg) | 検証結果 dict（`{valid, error, ...}`） |
 | [`to-mcap`](#to-mcap) | 変換結果 dict |
@@ -413,6 +416,59 @@ rosbag2lerobot audit-timestamps --dataset /path/to/output_dataset/
 - `from_timestamp` が `0.0` にリセットされるのは mp4 境界のみ
 
 エラーが 1 件でもあれば exit code を非ゼロで返すので、CI の後段に挟めます。
+
+## `validate-video-metadata`
+
+**LeRobot が学習時に実際に計算する動画フレーム参照を FFmpeg ベースで再現**し、実 mp4 の範囲に収まるかを照合します。純関数は `rosbag2lerobot.video_reconciliation.validate_video_metadata`。torch / torchcodec 非依存（pyarrow + numpy + ffprobe/ffmpeg のみ）。
+
+LeRobot（TorchCodec バックエンド）は data parquet 各行の `timestamp` から
+`requested_frame = round((from_timestamp + row_timestamp) * avg_frame_rate)` 番目のフレームを mp4 に要求します。これが実フレーム数以上だと DataLoader がその行を引いた瞬間に `IndexError: Invalid frame index=N ... must be less than M` で落ちます。このコマンドは同じ式（fps は info.json ではなく **動画側の `avg_frame_rate`**、丸めは Python `round()` 準拠）で学習前に検出します。
+
+```bash
+rosbag2lerobot validate-video-metadata --dataset /path/to/output_dataset/            # 高速
+rosbag2lerobot validate-video-metadata --dataset /path/to/output_dataset/ --strict   # 厳密
+```
+
+| オプション | 必須 | デフォルト | 説明 |
+|---|---|---|---|
+| `--dataset PATH` | ✓ | — | 照合対象の LeRobot v3.0 データセットルート。 |
+| `--strict` |  | off | **厳密チェック**。全フレームの PTS を取得し**全 data 行**を検査（フレーム範囲・PTS 許容誤差・index 連続性・timestamp 単調性・ヘッダ/実デコードのフレーム数一致）。デコードが走るため遅い。省略時は**高速チェック**（各 episode の min/max timestamp とヘッダ `nb_frames` のみ・即時）。 |
+| `--tolerance-s FLOAT` |  | `0.5/fps` | 厳密チェックの PTS 許容誤差（秒）。学習時の LeRobot 既定値を再現するには `1e-4`。合格条件は `誤差 < tolerance`（等号は不合格 = LeRobot と同じ）。 |
+| `--full-decode` |  | off | 厳密チェックに加え全 mp4 を `ffmpeg -xerror` で末尾まで実デコードし、ストリーム破損を検出（`--strict` を含意）。 |
+| `--max-errors INT` |  | `50` | 記録するエラー/警告の上限。総数は `total_errors` としてカウントされ、切り詰め時は `truncated` で通知。 |
+| `--json-out PATH` |  | なし | 指定すると `VideoMetadataReport` を JSON で書き出す（人間向け summary は常に併出）。 |
+| `--json` |  | off | `VideoMetadataReport` dict を stdout に JSON 出力（人間向け summary は抑制）。 |
+
+判定式（高速: 各 episode × video key の min/max 行、厳密: 全行）:
+
+```
+shifted_timestamp = from_timestamp + row_timestamp      # row_timestamp は data parquet の実値
+requested_frame   = round(shifted_timestamp * avg_frame_rate)
+OK ⟺ 0 <= requested_frame < 実 mp4 フレーム数
+（厳密のみ）|frame_pts[requested_frame] - shifted_timestamp| < tolerance_s
+```
+
+同一 mp4 に複数 episode が連続格納される点に対応済みで、`ffprobe` は **mp4 1 本につき 1 回だけ**（結果キャッシュ＋並列プリフェッチ）。
+
+主な判定ステータス（エラー = exit 1）:
+
+| status | 意味 |
+|---|---|
+| `FRAME_INDEX_OUT_OF_RANGE` | 要求フレームが実 mp4 の末尾より後ろ（今回の `Invalid frame index` に対応）。`overflow` = 超過フレーム数。 |
+| `FRAME_INDEX_NEGATIVE` | 要求フレームが負（`from_timestamp` 異常）。 |
+| `VIDEO_MISSING` / `VIDEO_UNREADABLE` / `INVALID_VIDEO_FPS` | 参照 mp4 が無い / ffprobe で読めない / `avg_frame_rate` 不正。 |
+| `EPISODE_LENGTH_MISMATCH` / `MISSING_EPISODE_DATA` | `episodes.length` ≠ data 行数 / metadata だけあって data 行が無い。 |
+| `MISSING_REQUIRED_COLUMN` / `MISSING_METADATA_VALUE` / `INVALID_TIMESTAMP` | video key の 4 列欠損 / 値 null / timestamp 非有限。 |
+| `FRAME_TIMESTAMP_OUT_OF_TOLERANCE`（厳密） | 取得フレーム PTS と要求時刻の差が許容誤差以上（LeRobot の `FrameTimestampError` に対応）。 |
+| `FRAME_COUNT_MISMATCH`（厳密） | ヘッダ `nb_frames` と実デコード数が不一致（**コピー中断・切断ファイル検出**。高速では通るが厳密で落ちる）。 |
+| `DUPLICATE_INDEX` / `INVALID_INDEX_SEQUENCE` / `NON_MONOTONIC_TIMESTAMP`（厳密） | index 重複 / episode 内不連続 / timestamp 逆行。 |
+| `FRAME_PTS_READ_FAILED` / `VIDEO_FULL_DECODE_FAILED`（厳密） | PTS 取得不能フレームあり / `--full-decode` でデコード失敗。 |
+
+警告（verdict に影響しない）: `DATASET_VIDEO_FPS_MISMATCH`（info.json fps と動画 `avg_frame_rate` の乖離）、`TO_TIMESTAMP_TOO_SMALL`（`to_timestamp` はフレーム計算に使われないため参考情報）。
+
+終了コード: `0` = 不整合なし、`1` = 不整合あり（**mp4 の欠損・破損もデータセット不整合として 1**）、`2` = 検査不能（`info.json` / `meta/episodes` / `data` が無い、fps 不正、`ffprobe` 未インストール）。学習前 CI にそのまま挟めます。
+
+> **注意**: 本コマンドが保証するのは「LeRobot の動画参照条件を FFmpeg ベースで検査した」ことまでです。`lerobot-train` の成功そのものや、TorchCodec / DataLoader worker 固有の問題は保証しません。
 
 ## `validate-msg`
 

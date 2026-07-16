@@ -20,6 +20,7 @@ sudo apt-get install ffmpeg    # 動画エンコードに必須
 | `validate-config` | YAML と bag の整合性検査 | `rosbag2lerobot validate-config --config configs/hsr.yaml --bags <bags>/` |
 | `validate-msg` | `.msg` 構文チェック | `rosbag2lerobot validate-msg --msg msgs/my_robot/MyType.msg` |
 | `audit-timestamps` | 生成データセットの timestamp 連続性監査 | `rosbag2lerobot audit-timestamps --dataset <out>/` |
+| `validate-video-metadata` | LeRobot の動画フレーム参照を再現し実 mp4 と照合（学習前チェック。`--strict` で全行 PTS 照合） | `rosbag2lerobot validate-video-metadata --dataset <out>/` |
 | `to-mcap` | ROS1 `.bag` → ROS2 MCAP に事前変換 | `rosbag2lerobot to-mcap <src>.bag -o <out>/` |
 
 ### convert の主要オプション

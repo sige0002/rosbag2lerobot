@@ -16,6 +16,7 @@ from rosbag2lerobot.cli.to_mcap import to_mcap
 from rosbag2lerobot.cli.validate_config import validate_config
 from rosbag2lerobot.cli.validate_dataset import validate_dataset_cmd
 from rosbag2lerobot.cli.validate_msg import validate_msg
+from rosbag2lerobot.cli.validate_video_metadata import validate_video_metadata_cmd
 
 
 @click.group()
@@ -32,6 +33,7 @@ main.add_command(validate_config)
 main.add_command(validate_dataset_cmd)
 main.add_command(quality_report_cmd)
 main.add_command(audit_timestamps)
+main.add_command(validate_video_metadata_cmd)
 main.add_command(validate_msg)
 main.add_command(preview_cmd)
 main.add_command(push_to_hub_cmd)
