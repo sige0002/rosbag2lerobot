@@ -8,10 +8,13 @@ against ``output/airoa_moma_mcap_hsr``.
 
 from __future__ import annotations
 
+import gc
+import itertools
 import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -466,3 +469,81 @@ def test_decode_of_a_corrupt_video_fails_instead_of_hanging(tmp_path: Path) -> N
     # Either outcome is acceptable — ffmpeg may salvage enough frames to exit
     # 0, or bail out with an error. What matters is that it finished.
     assert outcome and not outcome[0].startswith("unexpected"), outcome
+
+
+@pytest.mark.slow
+def test_abandoning_the_decode_early_reports_no_failure(tmp_path: Path) -> None:
+    """Stopping early must not turn a healthy video into an error.
+
+    Closing the generator (explicitly, or by dropping it after a ``break``)
+    closes ffmpeg's stdout, which kills ffmpeg with EPIPE. That exit status is
+    a consequence of our own teardown, so it must not be reported as a decode
+    failure — otherwise a partial consumer sees "decode failed (returncode=224)
+    ... Broken pipe" for a perfectly good file.
+    """
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+
+    video = tmp_path / "good.mp4"
+    _encode_testsrc(video, duration_s=5)
+
+    gen = _decode_video_frames(video)
+    frames = list(itertools.islice(gen, 3))
+    assert len(frames) == 3
+    gen.close()  # must not raise
+
+    # The same shape as a caller that breaks out of a for-loop and drops the
+    # reference: CPython closes the generator when it is collected.
+    gen2 = _decode_video_frames(video)
+    for _ in gen2:
+        break
+    del gen2
+    gc.collect()
+
+
+@pytest.mark.slow
+def test_full_decode_of_a_healthy_video_yields_every_frame(tmp_path: Path) -> None:
+    """The non-abandoned path is unchanged: all frames, no error."""
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+
+    video = tmp_path / "good.mp4"
+    _encode_testsrc(video, duration_s=2)
+    frames = list(_decode_video_frames(video))
+
+    assert len(frames) == 60  # 2s @ 30fps
+    assert frames[0].shape == (240, 320, 3)
+
+
+def test_a_nonzero_exit_still_raises_with_its_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Suppressing the abandoned case must not suppress real failures.
+
+    Only ffmpeg is stubbed; the ffprobe call that sizes the video still runs
+    for real, so this exercises the decode path exactly as production hits it.
+    """
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not available")
+
+    video = tmp_path / "good.mp4"
+    _encode_testsrc(video, duration_s=1)
+
+    stub = tmp_path / "stub_ffmpeg.py"
+    stub.write_text(
+        'import sys\nsys.stderr.write("stub: decoder exploded\\n")\nsys.exit(7)\n'
+    )
+    real_popen = subprocess.Popen
+
+    def _fake_popen(cmd: Any, *args: Any, **kwargs: Any) -> subprocess.Popen:
+        argv = [cmd] if isinstance(cmd, str) else list(cmd)
+        if not argv or Path(str(argv[0])).name != "ffmpeg":
+            return real_popen(cmd, *args, **kwargs)
+        return real_popen([sys.executable, str(stub)], *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        list(_decode_video_frames(video))
+    assert "returncode=7" in str(excinfo.value)
+    assert "stub: decoder exploded" in str(excinfo.value)

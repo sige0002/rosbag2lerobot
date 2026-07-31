@@ -358,6 +358,7 @@ def _decode_video_frames(path: Path) -> Iterable[np.ndarray]:
             stdout=subprocess.PIPE,
             stderr=errfile,
         )
+        abandoned = False
         try:
             assert proc.stdout is not None
             while True:
@@ -365,11 +366,23 @@ def _decode_video_frames(path: Path) -> Iterable[np.ndarray]:
                 if not buf or len(buf) < frame_size:
                     break
                 yield np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 3)
+        except GeneratorExit:
+            # The consumer stopped early (an explicit close(), or the
+            # generator being collected after a break). Closing stdout below
+            # kills ffmpeg with EPIPE — that is our own teardown, not a decode
+            # failure, and reporting it would turn a healthy video into a
+            # spurious error raised from close() (or, under GC, into an
+            # "Exception ignored in generator" with the diagnostic lost).
+            abandoned = True
+            raise
         finally:
             if proc.stdout is not None:
                 proc.stdout.close()
+            if abandoned and proc.poll() is None:
+                # Don't wait out a decode whose output nobody will read.
+                proc.kill()
             ret = proc.wait()
-            if ret != 0:
+            if ret != 0 and not abandoned:
                 raise RuntimeError(
                     f"ffmpeg decode failed for {path} (returncode={ret}): "
                     f"{_tail_text(errfile)}"

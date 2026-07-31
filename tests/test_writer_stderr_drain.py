@@ -61,6 +61,13 @@ sys.stderr.buffer.flush()
 sys.exit(3)
 """
 
+# Stays alive reading stdin, like a healthy encoder waiting for more frames.
+_PATIENT_STUB = """\
+import sys
+
+sys.stdin.buffer.read()
+"""
+
 
 def _install_stub_encoder(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: str
@@ -251,6 +258,44 @@ class TestFailureDiagnostics:
         with pytest.raises(RuntimeError) as excinfo:
             writer._drain_video_queue(VKEY)
         assert "stub failure: unknown encoder" in str(excinfo.value)
+        # The failure unwinds past _close_video_encoder, so this is where the
+        # encoder has to have been reaped and forgotten.
+        assert VKEY not in writer._image_encoders
+        assert VKEY not in writer._image_stderr_readers
+
+    def test_a_live_encoder_is_killed_when_the_feeder_fails(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, writer: DatasetWriter
+    ) -> None:
+        """A non-EPIPE feeder error must not leave ffmpeg running.
+
+        ffmpeg is perfectly healthy here — the feeder failed for its own
+        reasons (a write that raised something other than BrokenPipeError).
+        Nothing downstream reaps the process, so the failure path has to, or
+        it lingers holding its stdin pipe until the interpreter exits.
+        """
+        _install_stub_encoder(monkeypatch, tmp_path, _PATIENT_STUB)
+        writer._ensure_encoder(VKEY, 64, 64)
+        proc = writer._image_encoders[VKEY]
+        feeder = writer._image_feeders[VKEY]
+        assert proc.poll() is None, "the stub should still be running"
+
+        # Stand in for a feeder that died on something other than EPIPE.
+        writer._image_feeder_errors[VKEY] = OSError("write failed")
+        with pytest.raises(RuntimeError, match="feeder for .* failed"):
+            writer._drain_video_queue(VKEY)
+
+        assert proc.poll() is not None, "ffmpeg was left running"
+        feeder.join(timeout=10)
+        assert not feeder.is_alive(), "the feeder thread was left parked"
+        for state in (
+            writer._image_encoders,
+            writer._image_feeders,
+            writer._image_feed_queues,
+            writer._image_stderr_readers,
+            writer._image_stderr_tails,
+            writer._image_feeder_errors,
+        ):
+            assert VKEY not in state
 
     def test_encoder_state_is_cleared_after_a_clean_close(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, writer: DatasetWriter

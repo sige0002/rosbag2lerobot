@@ -79,6 +79,11 @@ _IMAGE_FEED_QUEUE_MAXSIZE = 32
 # Timeout (seconds) for waiting on an ffmpeg encoder to drain and exit.
 _ENCODER_WAIT_TIMEOUT = 300
 
+# Timeout (seconds) for tearing an encoder down on a failure path. Nothing is
+# being drained there — the process is killed first — so this only bounds how
+# long a wedged child or feeder can delay the error propagating.
+_ENCODER_TEARDOWN_TIMEOUT = 10
+
 # Timeout (seconds) for waiting on a stderr drain thread to observe EOF.
 # Only ever waited on after the encoder has been reaped, so EOF is already
 # pending; the bound exists so a wedged reader cannot hang the error path.
@@ -1129,8 +1134,49 @@ class DatasetWriter:
         if err is not None:
             self._raise_encoder_failure(vkey, err)
 
+    def _discard_encoder(self, vkey: str) -> None:
+        """Tear ``vkey``'s encoder down without finalizing its output file.
+
+        The failure paths raise past :meth:`_close_video_encoder`, so nothing
+        else would ever reap the process: an encoder that is still alive would
+        hold its stdin pipe (and its feeder thread would stay parked on the
+        queue) until the interpreter exits. The output mp4 is unusable at this
+        point, so there is nothing to salvage — just stop the process, release
+        the threads, and drop the per-encoder state.
+        """
+        proc = self._image_encoders.pop(vkey, None)
+        if proc is None:
+            return
+        if proc.poll() is None:
+            # Killing closes ffmpeg's end of the pipe, so a feeder parked in
+            # write() comes back with EPIPE instead of blocking forever.
+            proc.kill()
+        try:
+            proc.wait(timeout=_ENCODER_TEARDOWN_TIMEOUT)
+        except subprocess.TimeoutExpired:  # pragma: no cover - kill() ignored
+            logger.warning("ffmpeg for %s did not exit after kill()", vkey)
+        q = self._image_feed_queues.pop(vkey, None)
+        if q is not None:
+            # The feeder is in drain mode after a failure, so the sentinel is
+            # consumed promptly rather than sitting behind a blocked write.
+            q.put(None)
+        feeder = self._image_feeders.pop(vkey, None)
+        if feeder is not None:
+            feeder.join(timeout=_ENCODER_TEARDOWN_TIMEOUT)
+        reader = self._image_stderr_readers.pop(vkey, None)
+        if reader is not None:
+            reader.join(timeout=_STDERR_DRAIN_TIMEOUT)
+        self._image_stderr_tails.pop(vkey, None)
+        self._image_feeder_errors.pop(vkey, None)
+        self._image_shapes.pop(vkey, None)
+        self._video_target_paths.pop(vkey, None)
+
     def _raise_encoder_failure(self, vkey: str, err: BaseException) -> None:
-        """Raise a RuntimeError describing a failed encoder for ``vkey``."""
+        """Raise a RuntimeError describing a failed encoder for ``vkey``.
+
+        Both branches tear the encoder down first — this raise unwinds past
+        :meth:`_close_video_encoder`, so it is the last chance to reap.
+        """
         proc = self._image_encoders.get(vkey)
         if isinstance(err, BrokenPipeError) and proc is not None:
             # The feeder hit a closed pipe: ffmpeg itself died. Surface its
@@ -1147,9 +1193,13 @@ class DatasetWriter:
                 ret,
                 stderr_text,
             )
+            self._discard_encoder(vkey)
             raise RuntimeError(
                 f"ffmpeg exited with code {ret} for {vkey}: {stderr_text}"
             ) from err
+        # Any other feeder failure (an OSError mid-write, say) leaves ffmpeg
+        # alive and waiting on a pipe nobody will write to again.
+        self._discard_encoder(vkey)
         raise RuntimeError(f"ffmpeg feeder for {vkey} failed: {err}") from err
 
     def _register_episode_video(self, vkey: str, ep_len: int) -> dict[str, Any]:
