@@ -1143,6 +1143,15 @@ class DatasetWriter:
         queue) until the interpreter exits. The output mp4 is unusable at this
         point, so there is nothing to salvage — just stop the process, release
         the threads, and drop the per-encoder state.
+
+        Deliberately *not* a resumable teardown: the (chunk, file) pointer is
+        left where it was and ``_video_file_duration`` keeps the dead file's
+        accumulated duration, so a future caller that caught the failure and
+        kept going would reopen onto the same target path (``-y`` overwrites
+        the partial mp4) with timestamps continuing from a file that no longer
+        exists — and this episode's rows are already in the data parquet by
+        then. Advance the file slot and reconcile the parquet before making
+        any such salvage flow possible.
         """
         proc = self._image_encoders.pop(vkey, None)
         if proc is None:

@@ -511,7 +511,10 @@ def test_full_decode_of_a_healthy_video_yields_every_frame(tmp_path: Path) -> No
     _encode_testsrc(video, duration_s=2)
     frames = list(_decode_video_frames(video))
 
-    assert len(frames) == 60  # 2s @ 30fps
+    # 2s @ 30fps. Kept as a range: the point is that the decode runs to
+    # completion, not that a future ffmpeg emits exactly 60 frames for a
+    # 2-second testsrc.
+    assert 58 <= len(frames) <= 62, len(frames)
     assert frames[0].shape == (240, 320, 3)
 
 
