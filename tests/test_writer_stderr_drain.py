@@ -82,12 +82,14 @@ def _install_stub_encoder(
     real_popen = subprocess.Popen
     seen: list[list[str]] = []
 
-    def _fake_popen(cmd: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
-        argv = list(cmd)
-        if not argv or argv[0] != "ffmpeg":
-            return real_popen(cmd, **kwargs)
+    def _fake_popen(cmd: Any, *args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        argv = [cmd] if isinstance(cmd, str) else list(cmd)
+        # Match on the basename so resolving ffmpeg to an absolute path in the
+        # writer does not silently de-stub this suite.
+        if not argv or Path(str(argv[0])).name != "ffmpeg":
+            return real_popen(cmd, *args, **kwargs)
         seen.append(argv)
-        return real_popen([sys.executable, str(stub)], **kwargs)
+        return real_popen([sys.executable, str(stub)], *args, **kwargs)
 
     monkeypatch.setattr(writer_mod.subprocess, "Popen", _fake_popen)
     return seen

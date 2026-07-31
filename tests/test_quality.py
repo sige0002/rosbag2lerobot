@@ -415,6 +415,35 @@ def test_decode_of_a_corrupt_video_fails_instead_of_hanging(tmp_path: Path) -> N
     data[start : start + 40000] = os.urandom(min(40000, len(data) - start))
     video.write_bytes(bytes(data))
 
+    # The test only exercises the deadlock if this corruption is loud enough
+    # to fill a pipe buffer, so assert that premise rather than assume it —
+    # a quieter future ffmpeg would otherwise let a re-broken decoder pass.
+    # subprocess.run reads both streams concurrently, so it cannot wedge.
+    probe = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(video),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "pipe:1",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert len(probe.stderr) > 64 * 1024, (
+        f"the corrupt clip emits only {len(probe.stderr)} B of stderr, below "
+        "the pipe buffer this test is meant to overflow"
+    )
+
     outcome: list[str] = []
 
     def _drive() -> None:
