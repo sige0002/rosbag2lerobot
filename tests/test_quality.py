@@ -9,7 +9,10 @@ against ``output/airoa_moma_mcap_hsr``.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +26,7 @@ from rosbag2lerobot.cli import main
 from rosbag2lerobot.quality import (
     QualityReport,
     _column_to_2d,
+    _decode_video_frames,
     compute_quality_report,
     count_freeze_frames,
     count_out_of_range,
@@ -357,3 +361,79 @@ def test_quality_report_real_dataset() -> None:
         # required to be nonzero.
         assert v.n_freeze >= 0
         assert v.freeze_rate >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# Corrupt-input decoding (regression: an unread stderr pipe deadlocks ffmpeg)
+# ---------------------------------------------------------------------------
+
+
+def _encode_testsrc(path: Path, duration_s: int = 20) -> None:
+    """Write a small, valid h264 mp4 at ``path`` using ffmpeg's test source."""
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc=size=320x240:rate=30:duration={duration_s}",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "30",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+        check=True,
+    )
+
+
+@pytest.mark.slow
+def test_decode_of_a_corrupt_video_fails_instead_of_hanging(tmp_path: Path) -> None:
+    """A damaged mp4 must raise, not wedge.
+
+    ``_decode_video_frames`` reads stdout frame by frame and only inspects
+    stderr after the process exits. A corrupt video emits >100 KiB of decode
+    errors even at ``-loglevel error``, so with stderr on a pipe ffmpeg
+    blocks in write() once the ~64 KiB buffer fills, stops producing stdout,
+    and both sides wait forever. Driven from a worker thread so the failure
+    mode is a timeout rather than a hung test session.
+    """
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+
+    video = tmp_path / "corrupt.mp4"
+    _encode_testsrc(video)
+    data = bytearray(video.read_bytes())
+    # Overwrite the middle of the stream, leaving the container header intact
+    # so ffmpeg opens the file and then chokes on the frames themselves.
+    start = 2000
+    data[start : start + 40000] = os.urandom(min(40000, len(data) - start))
+    video.write_bytes(bytes(data))
+
+    outcome: list[str] = []
+
+    def _drive() -> None:
+        try:
+            for _ in _decode_video_frames(video):
+                pass
+            outcome.append("completed")
+        except RuntimeError:
+            outcome.append("raised")
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assert
+            outcome.append(f"unexpected: {exc!r}")
+
+    t = threading.Thread(target=_drive, name="decode-corrupt", daemon=True)
+    t.start()
+    t.join(timeout=120.0)
+    assert not t.is_alive(), (
+        "decoding a corrupt video deadlocked: ffmpeg's stderr is not being "
+        "drained, so it blocked in write() and stopped producing frames"
+    )
+    # Either outcome is acceptable — ffmpeg may salvage enough frames to exit
+    # 0, or bail out with an error. What matters is that it finished.
+    assert outcome and not outcome[0].startswith("unexpected"), outcome

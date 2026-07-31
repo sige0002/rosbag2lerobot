@@ -31,12 +31,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
+import tempfile
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 import numpy as np
 import pyarrow as pa
@@ -67,6 +69,9 @@ __all__ = [
 _DEFAULT_W_NULL = 0.5
 _DEFAULT_W_RANGE = 0.3
 _DEFAULT_W_FREEZE = 0.2
+
+# Bytes of a failed decode's stderr kept for the error message.
+_STDERR_TAIL_MAXLEN = 16 * 1024
 
 
 @dataclass
@@ -302,57 +307,73 @@ def _video_dimensions(path: Path) -> tuple[int, int]:
     return int(stream["width"]), int(stream["height"])
 
 
+def _tail_text(f: IO[bytes]) -> str:
+    """Return the last :data:`_STDERR_TAIL_MAXLEN` bytes of ``f`` as text.
+
+    A damaged video produces error lines by the hundred; only the tail is
+    worth putting in an exception message.
+    """
+    try:
+        size = f.seek(0, os.SEEK_END)
+        f.seek(max(0, size - _STDERR_TAIL_MAXLEN))
+        return f.read().decode(errors="replace")
+    except OSError:  # pragma: no cover - the temp file is ours and seekable
+        return ""
+
+
 def _decode_video_frames(path: Path) -> Iterable[np.ndarray]:
     """Yield decoded RGB frames of ``path`` as ``(H, W, 3)`` uint8 ndarrays.
 
     Decodes to raw ``rgb24`` via ffmpeg ``-f rawvideo -pix_fmt rgb24 pipe:1``
     and slices the byte stream into per-frame arrays. Kept separate from
     :func:`count_freeze_frames` so the latter stays I/O-free.
+
+    stderr goes to a temp file rather than a pipe: this loop reads stdout
+    frame by frame and only looks at stderr after the process exits, so a
+    piped stderr would deadlock on a damaged video — the one input a quality
+    check is most likely to be pointed at. A corrupt mp4 emits well over
+    100 KiB of decode errors even at ``-loglevel error``, far past the
+    ~64 KiB pipe buffer at which ffmpeg would block in write() and stop
+    producing the stdout this loop is waiting on.
     """
     width, height = _video_dimensions(path)
     frame_size = width * height * 3
-    proc = subprocess.Popen(
-        [
-            "ffmpeg",
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            str(path),
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "pipe:1",
-        ],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    try:
-        assert proc.stdout is not None
-        while True:
-            buf = proc.stdout.read(frame_size)
-            if not buf or len(buf) < frame_size:
-                break
-            yield np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 3)
-    finally:
-        if proc.stdout is not None:
-            proc.stdout.close()
-        ret = proc.wait()
-        if ret != 0:
-            stderr = b""
-            if proc.stderr is not None:
-                stderr = proc.stderr.read() or b""
-            if proc.stderr is not None:
-                proc.stderr.close()
-            raise RuntimeError(
-                f"ffmpeg decode failed for {path} (returncode={ret}): "
-                f"{stderr.decode(errors='replace')}"
-            )
-        elif proc.stderr is not None:
-            proc.stderr.close()
+    with tempfile.TemporaryFile() as errfile:
+        proc = subprocess.Popen(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(path),
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "pipe:1",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=errfile,
+        )
+        try:
+            assert proc.stdout is not None
+            while True:
+                buf = proc.stdout.read(frame_size)
+                if not buf or len(buf) < frame_size:
+                    break
+                yield np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 3)
+        finally:
+            if proc.stdout is not None:
+                proc.stdout.close()
+            ret = proc.wait()
+            if ret != 0:
+                raise RuntimeError(
+                    f"ffmpeg decode failed for {path} (returncode={ret}): "
+                    f"{_tail_text(errfile)}"
+                )
 
 
 def _load_stats(dataset_dir: Path) -> dict[str, Any]:
