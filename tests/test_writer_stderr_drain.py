@@ -70,6 +70,12 @@ def _install_stub_encoder(
     The stub is launched through the real ``Popen`` with the writer's own
     pipe configuration, so stdin/stdout/stderr behave exactly as they do in
     production.
+
+    The patch lands on the stdlib ``subprocess`` module (writer.py imports the
+    module, not the name), so it is visible process-wide for the duration of
+    the test. Only ffmpeg invocations are redirected — anything else is passed
+    through to the real ``Popen`` untouched, so an unrelated subprocess cannot
+    silently end up running the stub.
     """
     stub = tmp_path / "stub_encoder.py"
     stub.write_text(body)
@@ -77,7 +83,10 @@ def _install_stub_encoder(
     seen: list[list[str]] = []
 
     def _fake_popen(cmd: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
-        seen.append(list(cmd))
+        argv = list(cmd)
+        if not argv or argv[0] != "ffmpeg":
+            return real_popen(cmd, **kwargs)
+        seen.append(argv)
         return real_popen([sys.executable, str(stub)], **kwargs)
 
     monkeypatch.setattr(writer_mod.subprocess, "Popen", _fake_popen)
@@ -207,9 +216,11 @@ class TestStderrDeadlock:
             )
             assert not failure, f"driving the encoder failed: {failure[0]!r}"
         finally:
-            # On a deadlock the stub is still alive holding both pipes.
+            # On a deadlock the stub is still alive holding both pipes; reap it
+            # so the failing run does not leave a zombie behind.
             for proc in list(writer._image_encoders.values()):
                 proc.kill()
+                proc.wait(timeout=10)
 
 
 class TestFailureDiagnostics:
