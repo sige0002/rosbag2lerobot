@@ -198,6 +198,15 @@ finalize()
 - H.264 / HEVC NVENC: `-preset p4`
 - 共通: `-pix_fmt yuv420p`（幅広い再生互換のため）
 
+各エンコーダには 2 本のバックグラウンドスレッドが付きます。フレームを stdin へ
+書き込む feeder と、stderr を読み捨て続ける drain です。drain は必須で、
+`stderr=PIPE` を誰も読まないと OS のパイプバッファ（通常 64 KiB）が満杯になった
+時点で `ffmpeg` 自身が `write()` の中でブロックし、永久に停止します（CPU 0%・
+進捗停止という、OOM kill と見分けのつきにくいハング）。エンコーダは
+`-hide_banner -loglevel warning -nostats` で起動して出力量そのものを抑え、
+drain は診断用に末尾 16 KiB だけを保持します（長時間の複数エピソード変換でも
+メモリを圧迫しないため）。
+
 `ffmpeg` の非ゼロ終了や stderr は `RuntimeError` で再送出。
 
 ### `info.json` の契約

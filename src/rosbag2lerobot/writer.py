@@ -79,6 +79,22 @@ _IMAGE_FEED_QUEUE_MAXSIZE = 32
 # Timeout (seconds) for waiting on an ffmpeg encoder to drain and exit.
 _ENCODER_WAIT_TIMEOUT = 300
 
+# Timeout (seconds) for waiting on a stderr drain thread to observe EOF.
+# Only ever waited on after the encoder has been reaped, so EOF is already
+# pending; the bound exists so a wedged reader cannot hang the error path.
+_STDERR_DRAIN_TIMEOUT = 10
+
+# Read size (bytes) for the per-encoder stderr drain threads.
+_STDERR_READ_CHUNK = 8192
+
+# Bytes of ffmpeg stderr retained per encoder for diagnostics. ffmpeg writes
+# to stderr for the whole life of the encoder, so it must be drained
+# unconditionally — an unread pipe stalls ffmpeg inside write() once the OS
+# buffer (typically 64 KiB) fills. Only the tail is kept so a long
+# multi-episode conversion cannot grow this without bound; the tail is what
+# matters anyway, since ffmpeg reports the fatal error last.
+_STDERR_TAIL_MAXLEN = 16 * 1024
+
 # Mapping from ffmpeg encoder name to the LeRobot ``info.json`` ``video.codec``
 # label. Unknown codecs fall back to the raw ffmpeg string.
 _CODEC_LABEL_MAP: dict[str, str] = {
@@ -158,6 +174,33 @@ def _build_codec_args(
         args += ["-threads", "0"]
 
     return args
+
+
+class _StderrTail:
+    """Bounded, thread-safe tail buffer for a subprocess's stderr.
+
+    Written by the drain thread, read by whichever thread reports the
+    failure, so every access is taken under a lock: the reporting thread
+    joins the drain thread first, but that join is bounded and may time out.
+    """
+
+    def __init__(self, maxlen: int = _STDERR_TAIL_MAXLEN) -> None:
+        self._maxlen = maxlen
+        self._lock = threading.Lock()
+        self._buf = bytearray()
+
+    def append(self, chunk: bytes) -> None:
+        """Append ``chunk``, discarding everything past ``maxlen`` bytes."""
+        with self._lock:
+            self._buf.extend(chunk)
+            excess = len(self._buf) - self._maxlen
+            if excess > 0:
+                del self._buf[:excess]
+
+    def text(self) -> str:
+        """Return the retained tail decoded for a log line / error message."""
+        with self._lock:
+            return bytes(self._buf).decode(errors="replace")
 
 
 class DatasetWriter:
@@ -268,11 +311,14 @@ class DatasetWriter:
 
         # Streaming encoder state. Each active camera owns one
         # subprocess.Popen writing to the current target mp4, a background
-        # feeder thread, and a bounded queue providing backpressure between
-        # add_frame() and the ffmpeg pipe.
+        # feeder thread, a bounded queue providing backpressure between
+        # add_frame() and the ffmpeg pipe, and a background stderr drain
+        # thread keeping that pipe from filling up (see _open_encoder).
         self._image_encoders: dict[str, subprocess.Popen[bytes]] = {}
         self._image_feeders: dict[str, threading.Thread] = {}
         self._image_feed_queues: dict[str, queue.Queue[bytes | None]] = {}
+        self._image_stderr_readers: dict[str, threading.Thread] = {}
+        self._image_stderr_tails: dict[str, _StderrTail] = {}
         self._video_target_paths: dict[str, Path] = {}
         self._image_shapes: dict[str, tuple[int, int]] = {}
         self._image_last_frame: dict[str, bytes | None] = {
@@ -937,11 +983,21 @@ class DatasetWriter:
         The codec arguments go through :func:`_build_codec_args`, matching
         the historical per-episode encoder; ``+faststart`` keeps the moov
         atom at the front like the previous concatenated output files.
+
+        Two background threads serve the process: the feeder pushes frames
+        into its stdin, and the drain thread consumes its stderr. The latter
+        is not optional — see the comment on ``_stderr_reader`` below.
         """
         target_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = [
             "ffmpeg",
             "-y",
+            # Keep stderr quiet: the banner and the per-frame progress lines
+            # are pure noise here, and every byte of them has to be drained.
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-nostats",
             "-f",
             "rawvideo",
             "-vcodec",
@@ -973,6 +1029,41 @@ class DatasetWriter:
             raise RuntimeError(
                 "ffmpeg not found. Please install ffmpeg to encode videos."
             ) from exc
+
+        tail = _StderrTail()
+
+        def _stderr_reader() -> None:
+            # ffmpeg keeps writing to stderr for as long as it runs. With
+            # stderr=PIPE and nobody reading it, the OS pipe buffer fills and
+            # ffmpeg blocks inside its own write() — permanently. That looks
+            # exactly like a hang: 0% CPU, no progress, easily mistaken for
+            # an OOM kill. So drain unconditionally, keeping only the tail
+            # for diagnostics. Exits on EOF, i.e. when ffmpeg exits.
+            stream = proc.stderr
+            if stream is None:
+                return
+            try:
+                while True:
+                    chunk = stream.read1(_STDERR_READ_CHUNK)
+                    if not chunk:
+                        break
+                    tail.append(chunk)
+            except (OSError, ValueError):
+                # Pipe torn down under us (e.g. the process was killed);
+                # whatever was already captured is still worth reporting.
+                pass
+            finally:
+                try:
+                    stream.close()
+                except Exception:  # a failed close must not mask the exit status
+                    logger.debug(
+                        "closing ffmpeg stderr for %s failed", vkey, exc_info=True
+                    )
+
+        r = threading.Thread(
+            target=_stderr_reader, name=f"ffmpeg-stderr-{vkey}", daemon=True
+        )
+        r.start()
 
         q: queue.Queue[bytes | None] = queue.Queue(maxsize=_IMAGE_FEED_QUEUE_MAXSIZE)
 
@@ -1006,7 +1097,22 @@ class DatasetWriter:
         self._image_encoders[vkey] = proc
         self._image_feeders[vkey] = t
         self._image_feed_queues[vkey] = q
+        self._image_stderr_readers[vkey] = r
+        self._image_stderr_tails[vkey] = tail
         self._image_shapes[vkey] = (width, height)
+
+    def _encoder_stderr_text(self, vkey: str) -> str:
+        """Return the retained tail of ``vkey``'s ffmpeg stderr as text.
+
+        Callers must have reaped the process first: EOF is what ends the
+        drain thread, so joining it before that would just burn the timeout
+        and report a truncated tail.
+        """
+        reader = self._image_stderr_readers.get(vkey)
+        if reader is not None:
+            reader.join(timeout=_STDERR_DRAIN_TIMEOUT)
+        tail = self._image_stderr_tails.get(vkey)
+        return tail.text() if tail is not None else ""
 
     def _drain_video_queue(self, vkey: str) -> None:
         """Block until every queued frame for ``vkey`` reached ffmpeg's stdin.
@@ -1034,21 +1140,15 @@ class DatasetWriter:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 ret = proc.wait()
-            stderr_bytes = b""
-            if proc.stderr is not None:
-                try:
-                    stderr_bytes = proc.stderr.read() or b""
-                except Exception:
-                    stderr_bytes = b""
+            stderr_text = self._encoder_stderr_text(vkey)
             logger.error(
                 "ffmpeg failed for %s (returncode=%d): %s",
                 vkey,
                 ret,
-                stderr_bytes.decode(errors="replace"),
+                stderr_text,
             )
             raise RuntimeError(
-                f"ffmpeg exited with code {ret} for {vkey}: "
-                f"{stderr_bytes.decode(errors='replace')}"
+                f"ffmpeg exited with code {ret} for {vkey}: {stderr_text}"
             ) from err
         raise RuntimeError(f"ffmpeg feeder for {vkey} failed: {err}") from err
 
@@ -1121,28 +1221,24 @@ class DatasetWriter:
         except subprocess.TimeoutExpired:
             proc.kill()
             ret = proc.wait()
+
+        # The process is reaped, so its stderr is at EOF and the drain thread
+        # is about to finish; collect the tail before dropping its state. The
+        # drain thread owns the pipe and closes it on the way out.
+        stderr_text = self._encoder_stderr_text(vkey)
+        self._image_stderr_readers.pop(vkey, None)
+        self._image_stderr_tails.pop(vkey, None)
+
         if ret != 0:
-            stderr_bytes = b""
-            if proc.stderr is not None:
-                try:
-                    stderr_bytes = proc.stderr.read() or b""
-                except Exception:
-                    stderr_bytes = b""
             logger.error(
                 "ffmpeg failed for %s (returncode=%d): %s",
                 vkey,
                 ret,
-                stderr_bytes.decode(errors="replace"),
+                stderr_text,
             )
             raise RuntimeError(
-                f"ffmpeg exited with code {ret} for {vkey}: "
-                f"{stderr_bytes.decode(errors='replace')}"
+                f"ffmpeg exited with code {ret} for {vkey}: {stderr_text}"
             )
-        if proc.stderr is not None:
-            try:
-                proc.stderr.close()
-            except Exception:
-                pass
         err = self._image_feeder_errors.pop(vkey, None)
         if err is not None and not isinstance(err, BrokenPipeError):
             raise RuntimeError(f"ffmpeg feeder for {vkey} failed: {err}") from err
