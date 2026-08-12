@@ -42,9 +42,9 @@ from rosbag2lerobot.config import (
 from rosbag2lerobot.resampler import Resampler
 from rosbag2lerobot.timestamps import (
     StampSkewError,
-    first_tf_skew,
     format_skew_error,
     format_tf_skew_error,
+    tf_skews,
 )
 
 from .conftest import ACTION_TOPIC, STATE_TOPIC, tf_config_yaml, tiny_config_yaml
@@ -267,16 +267,18 @@ def _tf_transform(parent: str, child: str, sec: int, nanosec: int = 0):
     )
 
 
-class TestFirstTfSkew:
-    """Unit-level: which transform (if any) trips the limit."""
+class TestTfSkews:
+    """Unit-level: which transforms trip the limit."""
 
-    def test_returns_none_when_all_within_limit(self) -> None:
+    def test_empty_when_all_within_limit(self) -> None:
         msg = SimpleNamespace(
             transforms=[_tf_transform("odom", "base_link", 100, 500_000_000)]
         )
-        assert first_tf_skew(msg, 100_000_000_000, 1_000_000_000) is None
+        assert tf_skews(msg, 100_000_000_000, 1_000_000_000) == []
 
-    def test_returns_the_first_offender_with_its_frames(self) -> None:
+    def test_reports_every_offender_with_its_frames(self) -> None:
+        """All of them, not just the first: which ones matter is decided later,
+        from the frame paths the configured features actually read through."""
         msg = SimpleNamespace(
             transforms=[
                 _tf_transform("odom", "base_link", 100),
@@ -284,19 +286,21 @@ class TestFirstTfSkew:
                 _tf_transform("arm_link", "tool", 9_000),
             ]
         )
-        offender = first_tf_skew(msg, 100_000_000_000, 1_000_000_000)
-        assert offender is not None
-        parent, child, header_ns = offender
-        assert (parent, child) == ("base_link", "arm_link")
-        assert header_ns == 4_000 * 1_000_000_000
+        offenders = tf_skews(msg, 100_000_000_000, 1_000_000_000)
+        assert [(p, c) for p, c, _ in offenders] == [
+            ("base_link", "arm_link"),
+            ("arm_link", "tool"),
+        ]
+        assert offenders[0][2] == 4_000 * 1_000_000_000
 
-    def test_unset_stamps_are_skipped(self) -> None:
-        """sec and nanosec both 0 means "never stamped", not "stamped at epoch"."""
+    def test_unset_stamps_are_not_offenders(self) -> None:
+        """sec and nanosec both 0 means "never stamped", not "stamped at epoch";
+        the receive-time fallback in add_dynamic handles those instead."""
         msg = SimpleNamespace(transforms=[_tf_transform("odom", "base_link", 0, 0)])
-        assert first_tf_skew(msg, 100_000_000_000, 1_000_000_000) is None
+        assert tf_skews(msg, 100_000_000_000, 1_000_000_000) == []
 
     def test_empty_message_is_fine(self) -> None:
-        assert first_tf_skew(SimpleNamespace(transforms=[]), 1, 1) is None
+        assert tf_skews(SimpleNamespace(transforms=[]), 1, 1) == []
 
 
 def test_format_tf_skew_error_names_the_transform() -> None:
@@ -308,7 +312,9 @@ def test_format_tf_skew_error_names_the_transform() -> None:
         header_ns=1_700_000_000_000_000_000 + ONE_HOUR_NS,
         receive_ns=1_700_000_000_000_000_000,
         threshold_ms=60_000.0,
+        feature_key="observation.ee_pose",
     )
+    assert "observation.ee_pose" in msg
     assert "/bags/ep3" in msg
     assert "'odom' -> 'base_link'" in msg
     assert "3600000 ms" in msg
@@ -377,10 +383,53 @@ class TestTfGuard:
         cfg = load_config(tf_config_yaml(tmp_path / "c.yaml"))
         assert _process_episode(bag, cfg, _resampler(cfg))
 
-    def test_unset_tf_stamps_are_exempt(self, tmp_path, tf_bag) -> None:
+    def test_unset_tf_stamps_fall_back_to_the_receive_time(
+        self, tmp_path, tf_bag
+    ) -> None:
+        """A publisher that never stamps its transforms must not freeze the
+        pose. Exempting an unset stamp from the *error* is not enough: taken
+        literally it is 1970, so the transform would enter the timeline there
+        and every lookup would clamp to it — the same corruption the guard
+        exists to prevent, reached by a different door. The receive time is the
+        fallback the non-TF path already uses for an unstamped message."""
         bag = tf_bag(unset_tf_stamp=True)
         cfg = load_config(tf_config_yaml(tmp_path / "c.yaml"))
-        assert _process_episode(bag, cfg, _resampler(cfg))
+
+        frames = _process_episode(bag, cfg, _resampler(cfg))
+
+        poses = {tuple(f["observation.ee_pose"]) for f in frames}
+        assert len(frames) > 1
+        assert len(poses) == len(frames)  # moving, not frozen
+
+    def test_skew_on_an_unused_edge_does_not_abort(self, tmp_path, tf_bag) -> None:
+        """One sensor on a bad clock must not fail a conversion that never
+        looks through its frames — the output would have been correct, and the
+        only escape hatch also disables the check where it matters."""
+        bag = tf_bag(
+            extra_dynamic_frame="imu_link", extra_dynamic_offset_ns=ONE_HOUR_NS
+        )
+        cfg = load_config(tf_config_yaml(tmp_path / "c.yaml"))
+
+        frames = _process_episode(bag, cfg, _resampler(cfg))
+
+        poses = {tuple(f["observation.ee_pose"]) for f in frames}
+        assert len(poses) == len(frames)
+
+    def test_skew_on_a_used_edge_still_aborts_with_others_present(
+        self, tmp_path, tf_bag
+    ) -> None:
+        """The scoping must not swallow the case that matters: the configured
+        path is skewed here, and an unrelated edge is fine."""
+        bag = tf_bag(tf_header_offset_ns=ONE_HOUR_NS, extra_dynamic_frame="imu_link")
+        cfg = load_config(tf_config_yaml(tmp_path / "c.yaml"))
+
+        with pytest.raises(StampSkewError) as excinfo:
+            _process_episode(bag, cfg, _resampler(cfg))
+
+        message = str(excinfo.value)
+        assert "'odom' -> 'base_link'" in message
+        assert "observation.ee_pose" in message
+        assert "imu_link" not in message
 
     def test_disabled_guard_skips_the_tf_check(self, tmp_path, tf_bag) -> None:
         bag = tf_bag(tf_header_offset_ns=ONE_HOUR_NS)

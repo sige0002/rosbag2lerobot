@@ -62,7 +62,8 @@ CLI エントリ (`cli/convert.py::convert`) が各 bag についてこのパイ
 | `writer.py` | LeRobot 特徴量スキーマを構築し、フレームをカメラごとの常駐 `ffmpeg` エンコーダにストリーミング（各フレームを 1 回だけエンコード、200MB 到達でファイルをローテーション）、parquet / MP4 / `info.json` / `stats.json` / `tasks.parquet` / `episodes/` を出力。 |
 | `stats.py` | Welford のオンラインアルゴリズムで min / max / mean / std / 分位数を算出し `meta/stats.json` に書き出す。 |
 | `diagnostics.py` | 診断系の純関数群。`compute_topic_fps_report`（F1: トピック周期統計）、`detect_image_shape` / `_normalize_yaml_image_size`（F3: 画像 shape 検出）、`validate_config_against_bag` + `ValidationReport`（F4: config ↔ bag 整合検証）。CLI からも CI スクリプトからも直接呼べる。 |
-| `timestamps.py` | `header.stamp` と bag 受信時刻の乖離ガード。`StampSkewError`（ワーカー越しに pickle されるので単一メッセージだけを持つ）と、bag / トピック / 特徴量 / スキュー / しきい値 / 対処法を並べる純関数 `format_skew_error`。しきい値は `config.TimestampsConfig`。 |
+| `transforms.py` | `/tf` + `/tf_static` から frame tree を組み、任意 2 フレーム間の姿勢を解決する `TransformLookup`（動的エッジは nearest-in-time）。`path_edges` は「その lookup が通るエッジ」を返し、タイムスタンプ健全性チェックの対象を実際に使われるエッジへ絞るのに使う。`add_dynamic(receive_ns=...)` はスタンプ未設定の transform を受信時刻で代替する（0 のまま入れると全参照がその 1 点へ丸められるため、代替が無ければ取り込まない）。 |
+| `timestamps.py` | `header.stamp` と bag 受信時刻の乖離ガード。`StampSkewError`（ワーカー越しに pickle されるので単一メッセージだけを持つ）、per-feature 用の `format_skew_error`、TF 用の `tf_skews` / `format_tf_skew_error`。しきい値は `config.TimestampsConfig`。 |
 | `progress.py` | 端末が無い実行のための進捗。`meta/progress.json` を atomic に更新する `ProgressReporter`、`metadata.yaml` からメッセージ数を読む `bag_message_count`、ログ 1 行を組み立てる `format_progress_line`。 |
 | `manifest.py` | `meta/conversion_log.json` の部品。bag のハッシュ（`sha256_of_path`）、ffmpeg バージョン、`build_manifest`、`--manifest-extra` の読み込みと予約キー除去（`BUILTIN_MANIFEST_KEYS`）。 |
 | `audit.py` | 生成済みデータセット側の監査純関数群（F2）。`audit_episode_timestamps` が `meta/episodes/*.parquet` を走査し、`to_timestamp[i] == from_timestamp[i+1]` と mp4 境界のリセット規則を検証。結果は `AuditReport` / `VideoKeyAuditResult` / `BoundaryError` で構造化。 |

@@ -42,9 +42,9 @@ from rosbag2lerobot.task_spec import SubtaskSpan, resolve_task
 from rosbag2lerobot.timestamps import (
     NS_PER_MS,
     StampSkewError,
-    first_tf_skew,
     format_skew_error,
     format_tf_skew_error,
+    tf_skews,
 )
 from rosbag2lerobot.transforms import TransformLookup, quat_xyzw_to_euler
 from rosbag2lerobot.cli._common import logger, _detect_nvenc, _make_progress
@@ -949,6 +949,61 @@ def _read_topics(cfg: RobotConfig) -> list[str]:
     return topics
 
 
+def _raise_for_skewed_tf_edges(
+    *,
+    bag_path: Path,
+    tf_features: list[FeatureMapping],
+    tf_lookup: TransformLookup,
+    skewed_edges: dict[tuple[str, str], tuple[str, int, int]],
+    threshold_ms: float,
+) -> None:
+    """Fail the episode if a TF feature reads through a badly-stamped edge.
+
+    Scoped on purpose. A skewed transform only corrupts a feature that
+    *traverses* it: a robot where one unused sensor publishes on a bad clock
+    would otherwise abort a conversion whose output is entirely correct, and
+    the only escape hatch (raising the threshold, or ``null``) would disable
+    the check on the edges that do matter.
+
+    Args:
+        bag_path: Bag being converted, for the message.
+        tf_features: The config's TF features (``frame_from`` / ``frame_to``).
+        tf_lookup: The tree built from this bag, used to resolve each path.
+        skewed_edges: ``(parent, child) -> (topic, header_ns, receive_ns)``
+            for every edge seen over the limit.
+        threshold_ms: The configured ``max_header_receive_skew_ms``.
+
+    Raises:
+        StampSkewError: On the first feature whose path crosses such an edge.
+    """
+    for fm in tf_features:
+        try:
+            edges = tf_lookup.path_edges(fm.frame_from, fm.frame_to)  # type: ignore[arg-type]
+        except ValueError:
+            # Frames missing / no path: the lookup below reports that on its
+            # own terms, and it is not a timestamp problem.
+            continue
+        for a, b in edges:
+            # The tree is undirected; the timeline is keyed either way round.
+            offender = skewed_edges.get((a, b)) or skewed_edges.get((b, a))
+            if offender is None:
+                continue
+            topic, header_ns, receive_ns = offender
+            parent, child = (a, b) if (a, b) in skewed_edges else (b, a)
+            raise StampSkewError(
+                format_tf_skew_error(
+                    bag_path=bag_path,
+                    topic=topic,
+                    parent_frame=parent,
+                    child_frame=child,
+                    header_ns=header_ns,
+                    receive_ns=receive_ns,
+                    threshold_ms=threshold_ms,
+                    feature_key=fm.key,
+                )
+            )
+
+
 def _process_episode(
     bag_path: Path,
     cfg: RobotConfig,
@@ -1004,6 +1059,11 @@ def _process_episode(
         # time beyond the effective ``max_stamp_delay_ms`` threshold.
         messages: list[tuple[str, int, object]] = []
         stale_dropped = 0
+        # Dynamic TF edges seen over the skew limit: (parent, child) ->
+        # (topic, header_ns, receive_ns). Only the first sighting per edge is
+        # kept; whether it is fatal depends on the paths resolved below.
+        tf_skewed_edges: dict[tuple[str, str], tuple[str, int, int]] = {}
+        tf_unstamped = 0
         for topic, recv_ns, raw_msg in reader.iter_messages(topics=read_topics):
             if progress is not None:
                 progress.advance()
@@ -1019,23 +1079,22 @@ def _process_episode(
                     # Dynamic transforms are keyed on their header stamp, which
                     # is what the frame grid samples against. A TFMessage has no
                     # header of its own, so the per-feature guard below never
-                    # sees these — check them here, before they enter the tree.
+                    # sees these. Record the offending edges and decide after
+                    # the read, once the tree shows which edges a configured
+                    # feature actually depends on.
                     if skew_limit_ns is not None:
-                        skewed = first_tf_skew(raw_msg, recv_ns, skew_limit_ns)
-                        if skewed is not None:
-                            parent_frame, child_frame, tf_header_ns = skewed
-                            raise StampSkewError(
-                                format_tf_skew_error(
-                                    bag_path=bag_path,
-                                    topic=topic,
-                                    parent_frame=parent_frame,
-                                    child_frame=child_frame,
-                                    header_ns=tf_header_ns,
-                                    receive_ns=recv_ns,
-                                    threshold_ms=skew_limit_ms,  # type: ignore[arg-type]
-                                )
+                        for parent_frame, child_frame, tf_header_ns in tf_skews(
+                            raw_msg, recv_ns, skew_limit_ns
+                        ):
+                            tf_skewed_edges.setdefault(
+                                (parent_frame, child_frame),
+                                (topic, tf_header_ns, recv_ns),
                             )
-                    tf_lookup.add_dynamic(raw_msg)
+                    # An unstamped transform must not enter the tree at t=0 —
+                    # one point in 1970 pins every later lookup to it. The
+                    # receive time is the same fallback the non-TF path uses
+                    # when a message carries no usable header stamp.
+                    tf_unstamped += tf_lookup.add_dynamic(raw_msg, receive_ns=recv_ns)
             header_ns = extract_header_stamp_ns(raw_msg)
             skew_ns = None if header_ns is None else abs(recv_ns - header_ns)
             for fm in topic_to_fms.get(topic, []):
@@ -1114,6 +1173,26 @@ def _process_episode(
             logger.info(
                 "  dropped %d stale message(s) (header lag > max_stamp_delay_ms)",
                 stale_dropped,
+            )
+        if tf_unstamped:
+            logger.info(
+                "  %d dynamic transform(s) carried no header stamp; used the bag "
+                "receive time for them",
+                tf_unstamped,
+            )
+
+        # (B'') Timestamp integrity guard for TF, now that the tree is complete.
+        # Only the edges a configured feature traverses can corrupt its output,
+        # and which those are is a property of the whole tree — a robot with one
+        # sensor on a bad clock must not fail a conversion that never looks
+        # through that sensor's frames.
+        if tf_skewed_edges and tf_lookup is not None:
+            _raise_for_skewed_tf_edges(
+                bag_path=bag_path,
+                tf_features=tf_features,
+                tf_lookup=tf_lookup,
+                skewed_edges=tf_skewed_edges,
+                threshold_ms=skew_limit_ms,  # type: ignore[arg-type]
             )
 
         # Sort by adopted timestamp (header times can reorder vs. receive order)

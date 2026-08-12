@@ -163,6 +163,61 @@ class TestTransformLookup:
         # path/adjacency caches are warm.
         assert lk.lookup("A", "C", 2600)[:3] == pytest.approx([1, 2, 0])
 
+    def test_path_edges_lists_what_a_lookup_traverses(self):
+        """The edges a feature depends on — used to scope the timestamp guard
+        to the transforms that can actually affect its output."""
+        lk = self._build()
+        assert lk.path_edges("C", "A") == [("C", "B"), ("B", "A")]
+        assert lk.path_edges("A", "C") == [("A", "B"), ("B", "C")]
+        assert lk.path_edges("A", "A") == []
+        with pytest.raises(ValueError):
+            lk.path_edges("A", "Z")
+
+    def test_unstamped_transform_is_not_ingested_at_time_zero(self):
+        """sec=nanosec=0 means "never stamped". Taken literally it is 1970, so
+        the transform would sit alone at the far past of the timeline and
+        nearest-in-time would clamp every later lookup to it — a pose that
+        looks valid and never moves. With no receive time to substitute, the
+        only honest thing is not to ingest it at all."""
+        lk = TransformLookup()
+        lk.add_static(_msg(_tf("A", "B", 0, 0, (1, 0, 0), (0, 0, 0, 1))))
+
+        unstamped = lk.add_dynamic(_msg(_tf("B", "C", 0, 0, (0, 5, 0), (0, 0, 0, 1))))
+
+        assert unstamped == 1
+        # The edge is absent, so this is a missing-transform error rather than
+        # a silently frozen pose.
+        with pytest.raises(ValueError):
+            lk.lookup("A", "C", 1000)
+
+    def test_unstamped_transform_uses_the_supplied_receive_time(self):
+        lk = TransformLookup()
+        lk.add_static(_msg(_tf("A", "B", 0, 0, (1, 0, 0), (0, 0, 0, 1))))
+
+        unstamped = lk.add_dynamic(
+            _msg(_tf("B", "C", 0, 0, (0, 5, 0), (0, 0, 0, 1))), receive_ns=7000
+        )
+        lk.add_dynamic(
+            _msg(_tf("B", "C", 0, 9000, (0, 6, 0), (0, 0, 0, 1))), receive_ns=9000
+        )
+
+        assert unstamped == 1
+        # Placed at 7000, not 0: it wins for a nearby stamp, loses for a far one.
+        assert lk.lookup("A", "C", 7100)[:3] == pytest.approx([1, 5, 0])
+        assert lk.lookup("A", "C", 8900)[:3] == pytest.approx([1, 6, 0])
+
+    def test_stamped_transforms_ignore_the_receive_time(self):
+        """The fallback is only for transforms with no stamp of their own."""
+        lk = TransformLookup()
+        lk.add_static(_msg(_tf("A", "B", 0, 0, (1, 0, 0), (0, 0, 0, 1))))
+
+        unstamped = lk.add_dynamic(
+            _msg(_tf("B", "C", 0, 1000, (0, 1, 0), (0, 0, 0, 1))), receive_ns=999_999
+        )
+
+        assert unstamped == 0
+        assert lk.lookup("A", "C", 1000)[:3] == pytest.approx([1, 1, 0])
+
     def test_add_after_lookup_invalidates_cache(self):
         # Warm the caches with a lookup, then extend the tree; the new topology
         # and the new dynamic sample must be reflected (cache invalidation).

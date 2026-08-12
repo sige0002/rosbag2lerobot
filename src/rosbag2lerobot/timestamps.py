@@ -115,16 +115,21 @@ def _skew_phrase(header_ns: int, receive_ns: int, threshold_ms: float) -> str:
     )
 
 
-def first_tf_skew(
+def tf_skews(
     tf_msg: Any,
     receive_ns: int,
     limit_ns: float,
-) -> tuple[str, str, int] | None:
-    """Find the first transform in *tf_msg* whose header stamp diverges too far.
+) -> list[tuple[str, str, int]]:
+    """Return every transform in *tf_msg* whose header stamp diverges too far.
 
     A ``tf2_msgs/msg/TFMessage`` carries no header of its own — each transform
     inside it has one — so the per-feature guard, which reads ``msg.header``,
     never sees a TF message at all. This is the TF equivalent.
+
+    Every offender is returned rather than just the first, because which of
+    them *matter* is decided later: only the edges a configured TF feature
+    actually traverses can corrupt its output, and the path through the tree
+    is not known until the whole bag has been read.
 
     Args:
         tf_msg: A deserialized ``TFMessage``.
@@ -132,11 +137,13 @@ def first_tf_skew(
         limit_ns: ``max_header_receive_skew_ms`` expressed in nanoseconds.
 
     Returns:
-        ``(parent_frame, child_frame, header_ns)`` for the first offending
-        transform, or ``None`` when every transform is within the limit.
-        Transforms with an unset stamp (``sec`` and ``nanosec`` both 0) are
-        skipped, matching :func:`reader.extract_header_stamp_ns`.
+        ``(parent_frame, child_frame, header_ns)`` per offending transform;
+        empty when they are all within the limit. A transform with an unset
+        stamp (``sec`` and ``nanosec`` both 0) is not an offender — there is
+        nothing to compare against, and ``TransformLookup.add_dynamic``
+        substitutes the receive time for it rather than trusting the 0.
     """
+    offenders: list[tuple[str, str, int]] | None = None
     for transform in getattr(tf_msg, "transforms", ()) or ():
         header = getattr(transform, "header", None)
         stamp = getattr(header, "stamp", None)
@@ -151,12 +158,16 @@ def first_tf_skew(
             continue
         header_ns = sec * 1_000_000_000 + nanosec
         if abs(receive_ns - header_ns) > limit_ns:
-            return (
-                str(getattr(header, "frame_id", "")),
-                str(getattr(transform, "child_frame_id", "")),
-                header_ns,
+            if offenders is None:
+                offenders = []
+            offenders.append(
+                (
+                    str(getattr(header, "frame_id", "")),
+                    str(getattr(transform, "child_frame_id", "")),
+                    header_ns,
+                )
             )
-    return None
+    return offenders or []
 
 
 def format_tf_skew_error(
@@ -168,6 +179,7 @@ def format_tf_skew_error(
     header_ns: int,
     receive_ns: int,
     threshold_ms: float,
+    feature_key: str,
 ) -> str:
     """Build the operator-facing message for a skewed dynamic transform.
 
@@ -184,6 +196,9 @@ def format_tf_skew_error(
         header_ns: That transform's header stamp, in UNIX nanoseconds.
         receive_ns: The bag receive time of the message carrying it.
         threshold_ms: The configured ``max_header_receive_skew_ms``.
+        feature_key: The config feature whose frame path crosses that edge —
+            the reason this particular transform is fatal rather than merely
+            present in the bag.
 
     Returns:
         A message suitable for a CLI error or a job summary entry.
@@ -192,11 +207,13 @@ def format_tf_skew_error(
         f"Header/receive timestamp skew in {bag_path}: topic {topic!r} "
         f"transform {parent_frame!r} -> {child_frame!r} has "
         + _skew_phrase(header_ns, receive_ns, threshold_ms)
-        + " TF features are sampled from the transform timeline by header "
-        "stamp, so converting this bag would silently pin that transform to "
-        "whichever end of its timeline is nearest — a pose that looks valid "
-        "and never moves. Fix the clock on the recording/publishing host, or "
-        "raise timestamps.max_header_receive_skew_ms (set it to null to "
-        "disable the check). Static transforms are not affected: their stamps "
-        "are discarded rather than used to look poses up."
+        + f" Feature {feature_key!r} looks poses up through that transform, "
+        "and the TF timeline is keyed on header stamps, so converting this "
+        "bag would pin it to whichever end of the timeline is nearest — a "
+        "pose that looks valid and never moves. Fix the clock on the "
+        "recording/publishing host, or raise "
+        "timestamps.max_header_receive_skew_ms (set it to null to disable "
+        "the check). Transforms this feature does not read through are not "
+        "checked, and static transforms are never affected: their stamps are "
+        "discarded rather than used to look poses up."
     )

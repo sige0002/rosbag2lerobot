@@ -156,10 +156,13 @@ episode fails with a message naming the topic and the observed skew, instead of
 producing a dataset whose timing is silently wrong — the usual cause is an
 unsynchronised clock on the recording or publishing host. The same threshold
 covers the dynamic transforms behind a TF feature (`frame_from`/`frame_to`),
-where a skewed `/tf` otherwise yields a pose that looks valid and never moves;
+where a skewed `/tf` otherwise yields a pose that looks valid and never moves —
+and only on the transforms that feature actually looks through, so one unused
+sensor on a bad clock does not fail an otherwise correct conversion.
 `/tf_static` is exempt, since its stamps are discarded rather than used to look
-poses up. Raise the threshold or set it to `null` to disable the check; see
-[`docs/configuration.md`](docs/configuration.md).
+poses up, and a transform carrying no stamp at all falls back to the bag receive
+time rather than being read as 1970. Raise the threshold or set it to `null` to
+disable the check; see [`docs/configuration.md`](docs/configuration.md).
 
 **`--json` on report commands.** `validate-config`, `validate-dataset`,
 `quality-report`, `audit-timestamps`, `validate-video-metadata`, `inspect`,

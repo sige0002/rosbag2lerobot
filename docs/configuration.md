@@ -202,17 +202,18 @@ receive time, over the timestamps.max_header_receive_skew_ms limit of 60000 ms.
 2. メッセージが header スタンプを実際に持つ（未設定 = `sec` も `nanosec` も 0 のものは対象外）。
 3. `max_stamp_delay_ms` で **破棄されなかった**（破棄はユーザーが明示した処理方針なので、そのメッセージは「対処済み」と見なす）。
 
-**(B) TF 特徴量（`frame_from` / `frame_to`）.** `/tf` の**動的** transform も、`TransformLookup` へ取り込む直前に同じしきい値で検査します。`tf2_msgs/msg/TFMessage` 自体は header を持たず（header は中の transform ごと）、姿勢の解決は各 transform の `header.stamp` をキーにした最近傍探索で行われるため、(A) の検査では素通りしてしまうからです。ずれた `/tf` は「タイムラインの端に張り付いた、一見正常でまったく動かない姿勢」を生みます（値は埋まっているので後段の構造検証も通ってしまう）。エラーにはトピックとフレーム対（`'odom' -> 'base_link'`）が入ります。
+**(B) TF 特徴量（`frame_from` / `frame_to`）.** `/tf` の**動的** transform も同じしきい値で検査します。`tf2_msgs/msg/TFMessage` 自体は header を持たず（header は中の transform ごと）、姿勢の解決は各 transform の `header.stamp` をキーにした最近傍探索で行われるため、(A) の検査では素通りしてしまうからです。ずれた `/tf` は「タイムラインの端に張り付いた、一見正常でまったく動かない姿勢」を生みます（値は埋まっているので後段の構造検証も通ってしまう）。エラーにはトピック・フレーム対・**影響を受ける特徴量キー**が入ります。
 
 ```
 Header/receive timestamp skew in /bags/ep3: topic '/tf' transform 'odom' ->
 'base_link' has a header stamp 3600000 ms ahead of its bag receive time, over
-the timestamps.max_header_receive_skew_ms limit of 60000 ms.
-...
+the timestamps.max_header_receive_skew_ms limit of 60000 ms. ... Feature
+'observation.ee_pose' looks poses up through that transform, ...
 ```
 
+- **判定は「その特徴量が実際に通るエッジ」だけが対象**です。bag 全体を読んで tree を組んだあと、各 TF 特徴量の `frame_from` → `frame_to` の経路を解決し、その経路上のエッジにずれがあるときだけ失敗します。使っていないセンサーの時計が狂っていても、出力が正しい変換を落とさないため（しきい値を上げて回避すると、肝心のエッジの検査まで無効になってしまう）。
 - **`/tf_static` は対象外**（意図的）。latch される性質上スタンプが古いのは正常であり、そもそも `TransformLookup.add_static` はスタンプを捨てて 1 つの行列として保持する（＝姿勢の解決に使わない）ので、ずれても出力は壊れません。
-- 未設定スタンプ（`sec` も `nanosec` も 0）の transform は (A) と同様に対象外です。
+- **未設定スタンプ（`sec` も `nanosec` も 0）は「時刻なし」として扱い、bag 受信時刻で代替**します（header が取れないメッセージを受信時刻にフォールバックする (A) と同じ規則）。0 を時刻として取り込むと 1970 年の 1 点としてタイムラインに入り、以降の参照が全部そこへ丸められて**同じ「動かない姿勢」になる**ため、決して 0 のままでは取り込みません。代替した件数は INFO ログに出ます。
 - `max_stamp_delay_ms` は **TF の取り込みには従来から適用されていません**（今回も追加していません）。TF 側の逃げ道はしきい値の引き上げか `null` です。
 
 **失敗の伝わり方.** `--skip-failed` なしなら **ラン全体を中断**します（出力は確定しない）。`--skip-failed` ありならそのエピソードだけ失敗として記録し、`job_summary.json` の `episodes[].error` にメッセージが残り、残りの bag から確定します。(A) (B) いずれの経路でも同じです。

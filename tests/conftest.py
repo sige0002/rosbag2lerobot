@@ -116,6 +116,8 @@ def write_tf_bag(
     tf_header_offset_ns: int = 0,
     static_header_offset_ns: int = 0,
     unset_tf_stamp: bool = False,
+    extra_dynamic_frame: str | None = None,
+    extra_dynamic_offset_ns: int = 0,
 ) -> Path:
     """Write a bag with joint states plus ``/tf`` and ``/tf_static``.
 
@@ -132,6 +134,11 @@ def write_tf_bag(
         tf_header_offset_ns: Added to every dynamic transform's header stamp.
         static_header_offset_ns: Added to the static transform's header stamp.
         unset_tf_stamp: Write ``sec=0, nanosec=0`` on dynamic transforms.
+        extra_dynamic_frame: When set, publish a second dynamic transform
+            ``base_link -> <frame>`` on ``/tf``. Stands in for another sensor
+            on the robot that no configured feature looks through.
+        extra_dynamic_offset_ns: Header-stamp offset for that extra transform,
+            so a test can skew it independently of the one in use.
 
     Returns:
         ``bag_path``, for chaining.
@@ -205,11 +212,17 @@ def write_tf_bag(
             writer.write(conn_action, recv_ns, payload)
 
             tf_stamp_ns = 0 if unset_tf_stamp else recv_ns + tf_header_offset_ns
-            tf_msg = TFMessage(
-                transforms=[
-                    _transform("odom", "base_link", tf_stamp_ns, i * 0.01),
-                ]
-            )
+            transforms = [_transform("odom", "base_link", tf_stamp_ns, i * 0.01)]
+            if extra_dynamic_frame is not None:
+                transforms.append(
+                    _transform(
+                        "base_link",
+                        extra_dynamic_frame,
+                        recv_ns + extra_dynamic_offset_ns,
+                        i * 0.02,
+                    )
+                )
+            tf_msg = TFMessage(transforms=transforms)
             writer.write(
                 conn_tf,
                 recv_ns,

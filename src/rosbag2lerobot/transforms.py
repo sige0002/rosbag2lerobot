@@ -163,28 +163,67 @@ class TransformLookup:
 
     # ---- ingest -------------------------------------------------------
     def _iter_transforms(self, tf_msg: Any):
+        """``(parent, child, stamp_ns | None, mat)`` を順に返す。
+
+        ``stamp_ns`` は **未設定スタンプ（sec も nanosec も 0）のとき None**。
+        0 をそのまま時刻として扱うと、その transform が 1970 年としてタイム
+        ラインに入り、以降の lookup が全部その端に張り付く（＝値は入っている
+        のに一切動かない姿勢）ため、「時刻なし」と「時刻 0」は呼び出し側で
+        区別できなければならない。
+        """
         for tr in tf_msg.transforms:
             parent = tr.header.frame_id
             child = tr.child_frame_id
             t = tr.transform.translation
             r = tr.transform.rotation
             stamp = tr.header.stamp
-            stamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+            sec = int(stamp.sec)
+            nanosec = int(stamp.nanosec)
+            stamp_ns = (
+                None if (sec == 0 and nanosec == 0) else sec * 1_000_000_000 + nanosec
+            )
             mat = _homogeneous((t.x, t.y, t.z), (r.x, r.y, r.z, r.w))
             yield parent, child, stamp_ns, mat
 
     def add_static(self, tf_msg: Any) -> None:
-        """``/tf_static`` メッセージ（複数 transform 可）を取り込む。"""
+        """``/tf_static`` メッセージ（複数 transform 可）を取り込む。
+
+        静的変換は全時刻で有効な 1 つの行列として保持し、**スタンプは使わない**。
+        """
         for parent, child, _stamp_ns, mat in self._iter_transforms(tf_msg):
             self._static[(parent, child)] = mat
         self._invalidate_caches()
 
-    def add_dynamic(self, tf_msg: Any) -> None:
-        """``/tf`` メッセージ（複数 transform 可）を取り込む。"""
+    def add_dynamic(self, tf_msg: Any, receive_ns: int | None = None) -> int:
+        """``/tf`` メッセージ（複数 transform 可）を取り込む。
+
+        Args:
+            tf_msg: deserialize 済みの ``tf2_msgs/msg/TFMessage``。
+            receive_ns: このメッセージの bag 受信時刻。**スタンプ未設定の
+                transform の代替時刻**として使う（通常メッセージで header が
+                取れないときに受信時刻へフォールバックするのと同じ規則）。
+                ``None`` なら代替が無いので、その transform は **取り込まない**。
+
+        Returns:
+            スタンプが未設定だった transform の件数（受信時刻で代替したか、
+            代替が無くて捨てたかによらず）。呼び出し側がログに出せるよう返す。
+
+        Note:
+            未設定スタンプを 0 として取り込むことは決してしない。タイムライン
+            の遥か過去に 1 点入るだけで `_nearest` が全参照をその点に丸め、
+            「一見正常でまったく動かない姿勢」を生むため。
+        """
+        unstamped = 0
         for parent, child, stamp_ns, mat in self._iter_transforms(tf_msg):
+            if stamp_ns is None:
+                unstamped += 1
+                if receive_ns is None:
+                    continue
+                stamp_ns = receive_ns
             self._dynamic.setdefault((parent, child), []).append((stamp_ns, mat))
             self._dynamic_sorted = False
         self._invalidate_caches()
+        return unstamped
 
     def _ensure_sorted(self) -> None:
         if self._dynamic_sorted:
@@ -262,6 +301,22 @@ class TransformLookup:
         path.reverse()
         self._path_cache[(frame_from, frame_to)] = path
         return path
+
+    def path_edges(self, frame_from: str, frame_to: str) -> list[tuple[str, str]]:
+        """``lookup`` が実際に通るフレーム対を順に返す。
+
+        tree は無向なので、返す ``(a, b)`` は ``_dynamic`` / ``_static`` に
+        ``(a, b)`` と ``(b, a)`` のどちらの向きで入っていることもある。
+        「この特徴量はどのエッジに依存しているか」を呼び出し側が知るための
+        公開 API（例: タイムスタンプ健全性チェックの対象を、実際に使われる
+        エッジだけに絞る）。
+
+        Raises:
+            ValueError: フレームが tree に無い／経路が存在しない場合
+                （``lookup`` と同じ条件）。
+        """
+        path = self._find_path(frame_from, frame_to)
+        return list(zip(path[:-1], path[1:]))
 
     def lookup(self, frame_to: str, frame_from: str, stamp_ns: int) -> np.ndarray:
         """frame_from の姿勢を frame_to で表した ``[tx,ty,tz,qx,qy,qz,qw]`` を返す。
