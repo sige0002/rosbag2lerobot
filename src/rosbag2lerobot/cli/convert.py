@@ -24,7 +24,13 @@ from rosbag2lerobot.config import (
 )
 from rosbag2lerobot.decoders import decode, decode_array
 from rosbag2lerobot.jobmeta import EpisodeResult, JobSummary, dir_bytes
-from rosbag2lerobot.manifest import ManifestInput, ffmpeg_version, sha256_of_path
+from rosbag2lerobot.manifest import (
+    ManifestInput,
+    ffmpeg_version,
+    load_manifest_extra,
+    sha256_of_path,
+    strip_builtin_keys,
+)
 from rosbag2lerobot.reader import BagReader, discover_bags, extract_header_stamp_ns
 from rosbag2lerobot.resampler import Resampler, trim_to_valid_range
 from rosbag2lerobot.task_spec import SubtaskSpan, resolve_task
@@ -115,6 +121,17 @@ from rosbag2lerobot.cli._common import logger, _detect_nvenc, _make_progress
         "good episodes). Default: a worker exception aborts the run."
     ),
 )
+@click.option(
+    "--manifest-extra",
+    "manifest_extra_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "JSON file whose object is merged into meta/conversion_log.json "
+        "(e.g. your own job/ticket ids). Keys that collide with the fields "
+        "rosbag2lerobot writes itself are ignored: built-ins win."
+    ),
+)
 def convert(
     config_path: str,
     bags_path: str,
@@ -133,6 +150,7 @@ def convert(
     json_summary: bool,
     quiet: bool,
     skip_failed: bool,
+    manifest_extra_path: Optional[str],
 ) -> None:
     """Convert ROS2 rosbags to a LeRobot v3.0 dataset.
 
@@ -142,6 +160,22 @@ def convert(
     """
     # 1. Load config
     cfg = load_config(config_path)
+
+    # Caller-supplied manifest fields are validated up-front: a typo in the
+    # JSON should fail before any bag is read, not after an hour of encoding.
+    user_manifest_extra: dict[str, Any] = {}
+    if manifest_extra_path is not None:
+        try:
+            user_manifest_extra = load_manifest_extra(manifest_extra_path)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
+        user_manifest_extra, dropped = strip_builtin_keys(user_manifest_extra)
+        if dropped:
+            logger.warning(
+                "--manifest-extra: ignoring %d key(s) reserved by rosbag2lerobot: %s",
+                len(dropped),
+                ", ".join(dropped),
+            )
 
     # --quiet / --json suppress rosbag2lerobot's INFO chatter so the progress bar (or
     # the emitted JSON summary) is the only output. Errors still surface.
@@ -291,7 +325,10 @@ def convert(
 
     config_snapshot = Path(config_path).read_text()
     config_sha256 = hashlib.sha256(config_snapshot.encode("utf-8")).hexdigest()
+    # Caller-supplied fields go in first so the built-ins below always win
+    # (colliding keys were already dropped by strip_builtin_keys).
     manifest_extra: dict[str, Any] = {
+        **user_manifest_extra,
         "inputs": manifest_inputs,
         "config_snapshot": config_snapshot,
         "config_sha256": config_sha256,

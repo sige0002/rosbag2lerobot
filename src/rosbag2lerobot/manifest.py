@@ -18,6 +18,7 @@ Design rules (CLAUDE.md):
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -30,6 +31,32 @@ _METADATA_FILENAME = "metadata.yaml"
 
 # Read chunk size for streaming file hashing (1 MiB).
 _HASH_CHUNK_BYTES = 1024 * 1024
+
+# Manifest keys the tool writes itself: the writer-owned encode/output facts
+# (``writer.DatasetWriter._write_conversion_log``) plus the provenance the CLI
+# assembles (:func:`build_manifest`). Caller-supplied entries — e.g. the
+# ``convert --manifest-extra`` JSON file — never overwrite these, so the
+# manifest cannot be made to lie about how the dataset was produced.
+BUILTIN_MANIFEST_KEYS = frozenset(
+    {
+        # writer-owned
+        "codec",
+        "codec_label",
+        "ffmpeg_preset",
+        "ffmpeg_crf",
+        "fps",
+        "total_episodes",
+        "total_frames",
+        "episode_lengths",
+        # CLI-owned provenance
+        "inputs",
+        "config_snapshot",
+        "config_sha256",
+        "rosbag2lerobot_version",
+        "ffmpeg_version",
+        "run_timestamp",
+    }
+)
 
 
 @dataclass
@@ -124,6 +151,61 @@ def ffmpeg_version() -> str | None:
         return None
     first_line = result.stdout.splitlines()[0].strip() if result.stdout else ""
     return first_line or None
+
+
+def load_manifest_extra(path: str | Path) -> dict[str, Any]:
+    """Load a caller-supplied manifest fragment from a JSON file.
+
+    Used by ``convert --manifest-extra`` to let an operator (or an automation
+    wrapping the CLI) record its own provenance — ticket ids, dataset labels,
+    upstream job ids — inside ``meta/conversion_log.json``.
+
+    Args:
+        path: Path to a JSON file whose root is an object.
+
+    Returns:
+        The parsed object as a dict.
+
+    Raises:
+        ValueError: If the file cannot be read, is not valid JSON, or its root
+            is not a JSON object. The message is phrased for direct display to
+            the user, since the CLI surfaces it before conversion starts.
+    """
+    p = Path(path)
+    try:
+        text = p.read_text()
+    except OSError as exc:
+        raise ValueError(f"Cannot read manifest extra file {p}: {exc}") from exc
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Manifest extra file {p} is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"Manifest extra file {p} must contain a JSON object at the root, "
+            f"got {type(parsed).__name__}."
+        )
+    return parsed
+
+
+def strip_builtin_keys(extra: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Remove keys owned by the tool from a caller-supplied manifest fragment.
+
+    Built-ins win: a caller cannot overwrite ``codec``, ``config_sha256``,
+    ``total_frames`` and friends, because those describe what actually
+    happened during the run.
+
+    Args:
+        extra: Caller-supplied manifest fragment (see
+            :func:`load_manifest_extra`).
+
+    Returns:
+        ``(filtered, dropped)`` — the fragment without built-in keys, and the
+        sorted list of key names that were dropped (for a warning).
+    """
+    filtered = {k: v for k, v in extra.items() if k not in BUILTIN_MANIFEST_KEYS}
+    dropped = sorted(k for k in extra if k in BUILTIN_MANIFEST_KEYS)
+    return filtered, dropped
 
 
 def build_manifest(
