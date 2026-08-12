@@ -1,0 +1,23 @@
+# Keep the build context to the package itself: the data trees below are
+# gitignored and routinely tens of GB.
+bagdata/
+test_bags/
+output/
+*.mcap
+*.db3
+*.bag
+
+.git/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+.claude/
+dev_docs/
