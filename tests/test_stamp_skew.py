@@ -12,17 +12,21 @@ the loud failure that replaced that:
   * exactly where it does *not* apply: ``stamp_source: receive`` features,
     messages without a header stamp, and messages already dropped by
     ``resampling.max_stamp_delay_ms``;
+  * the same guard on TF inputs, which reach the pipeline by a different
+    route (a ``TFMessage`` has no header of its own) and corrupt in a
+    different way (a frozen pose rather than shifted sample times);
   * the CLI contract — abort by default, record-and-continue with
     ``--skip-failed``.
 
-Bags are synthesized by the ``tiny_bag`` fixture, so nothing here depends on
-the gitignored ``bagdata/`` tree.
+Bags are synthesized by the ``tiny_bag`` / ``tf_bag`` fixtures, so nothing
+here depends on the gitignored ``bagdata/`` tree.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner, Result
@@ -36,9 +40,14 @@ from rosbag2lerobot.config import (
     load_config,
 )
 from rosbag2lerobot.resampler import Resampler
-from rosbag2lerobot.timestamps import StampSkewError, format_skew_error
+from rosbag2lerobot.timestamps import (
+    StampSkewError,
+    first_tf_skew,
+    format_skew_error,
+    format_tf_skew_error,
+)
 
-from .conftest import ACTION_TOPIC, STATE_TOPIC, tiny_config_yaml
+from .conftest import ACTION_TOPIC, STATE_TOPIC, tf_config_yaml, tiny_config_yaml
 
 ONE_HOUR_NS = 3_600 * 1_000_000_000
 
@@ -241,6 +250,171 @@ class TestGuardDoesNotFire:
         bag = tiny_bag(unset_header_stamp=True)
         cfg = load_config(tiny_config_yaml(tmp_path / "c.yaml"))
         assert _process_episode(bag, cfg, _resampler(cfg))
+
+
+# ---------------------------------------------------------------------------
+# TF inputs
+# ---------------------------------------------------------------------------
+
+
+def _tf_transform(parent: str, child: str, sec: int, nanosec: int = 0):
+    """A stand-in for one geometry_msgs/TransformStamped."""
+    return SimpleNamespace(
+        header=SimpleNamespace(
+            frame_id=parent, stamp=SimpleNamespace(sec=sec, nanosec=nanosec)
+        ),
+        child_frame_id=child,
+    )
+
+
+class TestFirstTfSkew:
+    """Unit-level: which transform (if any) trips the limit."""
+
+    def test_returns_none_when_all_within_limit(self) -> None:
+        msg = SimpleNamespace(
+            transforms=[_tf_transform("odom", "base_link", 100, 500_000_000)]
+        )
+        assert first_tf_skew(msg, 100_000_000_000, 1_000_000_000) is None
+
+    def test_returns_the_first_offender_with_its_frames(self) -> None:
+        msg = SimpleNamespace(
+            transforms=[
+                _tf_transform("odom", "base_link", 100),
+                _tf_transform("base_link", "arm_link", 4_000),
+                _tf_transform("arm_link", "tool", 9_000),
+            ]
+        )
+        offender = first_tf_skew(msg, 100_000_000_000, 1_000_000_000)
+        assert offender is not None
+        parent, child, header_ns = offender
+        assert (parent, child) == ("base_link", "arm_link")
+        assert header_ns == 4_000 * 1_000_000_000
+
+    def test_unset_stamps_are_skipped(self) -> None:
+        """sec and nanosec both 0 means "never stamped", not "stamped at epoch"."""
+        msg = SimpleNamespace(transforms=[_tf_transform("odom", "base_link", 0, 0)])
+        assert first_tf_skew(msg, 100_000_000_000, 1_000_000_000) is None
+
+    def test_empty_message_is_fine(self) -> None:
+        assert first_tf_skew(SimpleNamespace(transforms=[]), 1, 1) is None
+
+
+def test_format_tf_skew_error_names_the_transform() -> None:
+    msg = format_tf_skew_error(
+        bag_path="/bags/ep3",
+        topic="/tf",
+        parent_frame="odom",
+        child_frame="base_link",
+        header_ns=1_700_000_000_000_000_000 + ONE_HOUR_NS,
+        receive_ns=1_700_000_000_000_000_000,
+        threshold_ms=60_000.0,
+    )
+    assert "/bags/ep3" in msg
+    assert "'odom' -> 'base_link'" in msg
+    assert "3600000 ms" in msg
+    assert "ahead of" in msg
+    # The TF-specific damage and the TF-specific way out.
+    assert "never moves" in msg
+    assert "max_header_receive_skew_ms" in msg
+    # stamp_source is not a lever for TF features; it must not be suggested.
+    assert "stamp_source" not in msg
+
+
+class TestTfGuard:
+    """A TFMessage reaches TransformLookup by its own route, and is guarded there."""
+
+    def test_skewed_dynamic_tf_fails_the_episode(self, tmp_path, tf_bag) -> None:
+        bag = tf_bag(tf_header_offset_ns=ONE_HOUR_NS)
+        cfg = load_config(tf_config_yaml(tmp_path / "c.yaml"))
+
+        with pytest.raises(StampSkewError) as excinfo:
+            _process_episode(bag, cfg, _resampler(cfg))
+
+        message = str(excinfo.value)
+        assert "/tf" in message
+        assert "'odom' -> 'base_link'" in message
+        assert "3600000 ms" in message
+
+    def test_this_is_what_the_guard_prevents(self, tmp_path, tf_bag) -> None:
+        """Turn the check off and the corruption is right there: every frame
+        gets the same pose, because the lookup timeline sits an hour away from
+        the frame grid and nearest-in-time clamps to its edge — a TF feature
+        that looks valid and never moves, with the run reporting success."""
+        bag = tf_bag(tf_header_offset_ns=ONE_HOUR_NS)
+        cfg = load_config(
+            tf_config_yaml(
+                tmp_path / "off.yaml",
+                extra="\ntimestamps:\n  max_header_receive_skew_ms: null\n",
+            )
+        )
+
+        frames = _process_episode(bag, cfg, _resampler(cfg))
+
+        poses = {tuple(f["observation.ee_pose"]) for f in frames}
+        assert len(frames) > 1
+        assert len(poses) == 1  # frozen
+
+    def test_healthy_tf_still_converts_and_moves(self, tmp_path, tf_bag) -> None:
+        bag = tf_bag()
+        cfg = load_config(tf_config_yaml(tmp_path / "c.yaml"))
+
+        frames = _process_episode(bag, cfg, _resampler(cfg))
+
+        poses = {tuple(f["observation.ee_pose"]) for f in frames}
+        assert len(poses) == len(frames)  # a distinct pose per frame
+
+    def test_tf_within_threshold_converts(self, tmp_path, tf_bag) -> None:
+        """100 ms of publisher latency is not a broken clock."""
+        bag = tf_bag(tf_header_offset_ns=100_000_000)
+        cfg = load_config(tf_config_yaml(tmp_path / "c.yaml"))
+        assert _process_episode(bag, cfg, _resampler(cfg))
+
+    def test_static_tf_skew_is_exempt(self, tmp_path, tf_bag) -> None:
+        """/tf_static is latched, so its stamps are legitimately old — and
+        TransformLookup.add_static discards them anyway, so they cannot move
+        a pose. Failing on them would break every real robot bag."""
+        bag = tf_bag(static_header_offset_ns=-100 * ONE_HOUR_NS)
+        cfg = load_config(tf_config_yaml(tmp_path / "c.yaml"))
+        assert _process_episode(bag, cfg, _resampler(cfg))
+
+    def test_unset_tf_stamps_are_exempt(self, tmp_path, tf_bag) -> None:
+        bag = tf_bag(unset_tf_stamp=True)
+        cfg = load_config(tf_config_yaml(tmp_path / "c.yaml"))
+        assert _process_episode(bag, cfg, _resampler(cfg))
+
+    def test_disabled_guard_skips_the_tf_check(self, tmp_path, tf_bag) -> None:
+        bag = tf_bag(tf_header_offset_ns=ONE_HOUR_NS)
+        cfg = load_config(
+            tf_config_yaml(
+                tmp_path / "c.yaml",
+                extra="\ntimestamps:\n  max_header_receive_skew_ms: null\n",
+            )
+        )
+        assert _process_episode(bag, cfg, _resampler(cfg))
+
+    def test_cli_aborts_and_skip_failed_continues(self, tmp_path, tf_bag) -> None:
+        """Same two semantics as the per-feature guard, over the TF path."""
+        tf_bag(name="bags/ep0")
+        tf_bag(name="bags/ep1", tf_header_offset_ns=ONE_HOUR_NS)
+        cfg_path = tf_config_yaml(tmp_path / "c.yaml")
+
+        aborted = _convert(tmp_path, tmp_path / "bags", cfg_path)
+        assert aborted.exit_code != 0
+        assert "timestamp skew" in aborted.output
+        assert not (tmp_path / "out" / "meta" / "info.json").exists()
+
+        skipped = _convert(
+            tmp_path, tmp_path / "bags", cfg_path, "--skip-failed", "--resume"
+        )
+        assert skipped.exit_code == 0, skipped.output
+        info = json.loads((tmp_path / "out" / "meta" / "info.json").read_text())
+        assert info["total_episodes"] == 1
+        summary = json.loads(
+            (tmp_path / "out" / "meta" / "job_summary.json").read_text()
+        )
+        failed = [ep for ep in summary["episodes"] if not ep["success"]]
+        assert len(failed) == 1
+        assert "'odom' -> 'base_link'" in failed[0]["error"]
 
 
 # ---------------------------------------------------------------------------

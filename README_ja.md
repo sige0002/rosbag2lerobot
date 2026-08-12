@@ -151,6 +151,9 @@ rosbag2lerobot/ffmpeg バージョン・実行時刻）と `job_summary.json`（
 `timestamps.max_header_receive_skew_ms`（既定 60 秒）を超えると、そのエピソードは
 トピック名と実測スキューを示して失敗します。タイミングが静かに壊れたデータセット
 を作らないためで、原因はたいてい収録ホストや publisher 側の時刻同期漏れです。
+同じしきい値は TF 特徴量（`frame_from` / `frame_to`）が使う **`/tf` の動的
+transform** にも効きます（ずれた `/tf` は「一見正常でまったく動かない姿勢」を生む
+ため）。`/tf_static` はスタンプを姿勢解決に使わないので対象外です。
 しきい値を上げる、または `null` で無効化できます。詳細は
 [`docs/configuration.md`](docs/configuration.md) を参照してください。
 

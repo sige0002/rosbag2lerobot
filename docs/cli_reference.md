@@ -348,6 +348,7 @@ observations:
 - 出力は既定で 7 要素の pose `[tx, ty, tz, qx, qy, qz, qw]`。
 - `selector: orientation.euler_xyz`（または `euler_xyz` / `...euler_zyx`）を付けると quaternion を **euler 角（ラジアン）** に置き換え、6 要素 `[tx, ty, tz, roll, pitch, yaw]` を出力します。
 - 動的 TF は出力フレームグリッド上で **nearest-in-time**（時刻最近傍）で参照します。
+- そのため `/tf` の header スタンプがずれていると、最近傍がタイムラインの端に張り付き「一見正常でまったく動かない姿勢」になります。これは [`timestamps.max_header_receive_skew_ms`](configuration.md#timestampsheader-と受信時刻の乖離を落とす) が検査します（既定で有効。`/tf_static` は対象外）。
 
 > `euler_xyz` セレクタは TF 特徴量に限らず、quaternion を持つ任意のフィールド（例: `pose.orientation.euler_xyz`）にも使えます。
 

@@ -11,7 +11,7 @@ milliseconds — build it here instead of depending on the gitignored
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 import pytest
@@ -106,6 +106,160 @@ def tiny_bag(tmp_path: Path) -> Callable[..., Path]:
         return write_tiny_bag(tmp_path / name, **kwargs)  # type: ignore[arg-type]
 
     return _factory
+
+
+def write_tf_bag(
+    bag_path: Path,
+    *,
+    n_messages: int = 30,
+    rate_hz: float = 30.0,
+    tf_header_offset_ns: int = 0,
+    static_header_offset_ns: int = 0,
+    unset_tf_stamp: bool = False,
+) -> Path:
+    """Write a bag with joint states plus ``/tf`` and ``/tf_static``.
+
+    The TF tree is ``base_link -> arm_link`` (static) and
+    ``odom -> base_link`` (dynamic, translating along x), which is enough for
+    a ``frame_from``/``frame_to`` feature to resolve. The offsets shift only
+    the *header* stamps, leaving the bag receive times alone, which is what an
+    unsynchronised publisher looks like on the wire.
+
+    Args:
+        bag_path: Directory to create (parents are created as needed).
+        n_messages: Messages written per topic (``/tf_static`` gets one).
+        rate_hz: Publish rate for receive times and header stamps.
+        tf_header_offset_ns: Added to every dynamic transform's header stamp.
+        static_header_offset_ns: Added to the static transform's header stamp.
+        unset_tf_stamp: Write ``sec=0, nanosec=0`` on dynamic transforms.
+
+    Returns:
+        ``bag_path``, for chaining.
+    """
+    bag_path.parent.mkdir(parents=True, exist_ok=True)
+    typestore = get_typestore(Stores.ROS2_HUMBLE)
+    JointState = typestore.types["sensor_msgs/msg/JointState"]
+    Header = typestore.types["std_msgs/msg/Header"]
+    Time = typestore.types["builtin_interfaces/msg/Time"]
+    TFMessage = typestore.types["tf2_msgs/msg/TFMessage"]
+    TransformStamped = typestore.types["geometry_msgs/msg/TransformStamped"]
+    Transform = typestore.types["geometry_msgs/msg/Transform"]
+    Vector3 = typestore.types["geometry_msgs/msg/Vector3"]
+    Quaternion = typestore.types["geometry_msgs/msg/Quaternion"]
+
+    def _stamp(ns: int) -> Any:
+        return Time(sec=int(ns // 1_000_000_000), nanosec=int(ns % 1_000_000_000))
+
+    def _transform(parent: str, child: str, stamp_ns: int, x: float) -> Any:
+        return TransformStamped(
+            header=Header(stamp=_stamp(stamp_ns), frame_id=parent),
+            child_frame_id=child,
+            transform=Transform(
+                translation=Vector3(x=x, y=0.0, z=0.0),
+                rotation=Quaternion(x=0.0, y=0.0, z=0.0, w=1.0),
+            ),
+        )
+
+    period_ns = int(1e9 / rate_hz)
+    with Writer(bag_path, version=9) as writer:
+        conn_state = writer.add_connection(
+            STATE_TOPIC, "sensor_msgs/msg/JointState", typestore=typestore
+        )
+        conn_action = writer.add_connection(
+            ACTION_TOPIC, "sensor_msgs/msg/JointState", typestore=typestore
+        )
+        conn_tf = writer.add_connection(
+            "/tf", "tf2_msgs/msg/TFMessage", typestore=typestore
+        )
+        conn_tf_static = writer.add_connection(
+            "/tf_static", "tf2_msgs/msg/TFMessage", typestore=typestore
+        )
+
+        static_msg = TFMessage(
+            transforms=[
+                _transform(
+                    "base_link",
+                    "arm_link",
+                    BAG_START_NS + static_header_offset_ns,
+                    0.5,
+                )
+            ]
+        )
+        writer.write(
+            conn_tf_static,
+            BAG_START_NS,
+            typestore.serialize_cdr(static_msg, "tf2_msgs/msg/TFMessage"),
+        )
+
+        for i in range(n_messages):
+            recv_ns = BAG_START_NS + i * period_ns
+            joint = JointState(
+                header=Header(stamp=_stamp(recv_ns), frame_id="base_link"),
+                name=np.array(JOINT_NAMES),
+                position=np.array([i * 0.01] * 3, dtype=np.float64),
+                velocity=np.zeros(3, dtype=np.float64),
+                effort=np.zeros(3, dtype=np.float64),
+            )
+            payload = typestore.serialize_cdr(joint, "sensor_msgs/msg/JointState")
+            writer.write(conn_state, recv_ns, payload)
+            writer.write(conn_action, recv_ns, payload)
+
+            tf_stamp_ns = 0 if unset_tf_stamp else recv_ns + tf_header_offset_ns
+            tf_msg = TFMessage(
+                transforms=[
+                    _transform("odom", "base_link", tf_stamp_ns, i * 0.01),
+                ]
+            )
+            writer.write(
+                conn_tf,
+                recv_ns,
+                typestore.serialize_cdr(tf_msg, "tf2_msgs/msg/TFMessage"),
+            )
+    return bag_path
+
+
+@pytest.fixture
+def tf_bag(tmp_path: Path) -> Callable[..., Path]:
+    """Return a factory that writes TF-carrying bags under ``tmp_path``."""
+
+    def _factory(name: str = "bag", **kwargs: object) -> Path:
+        return write_tf_bag(tmp_path / name, **kwargs)  # type: ignore[arg-type]
+
+    return _factory
+
+
+def tf_config_yaml(path: Path, *, fps: int = 10, extra: str = "") -> Path:
+    """Write a config with a TF feature matching :func:`write_tf_bag`."""
+    path.write_text(
+        f"""robot_type: tiny_tf
+fps: {fps}
+task: tiny tf task
+
+observations:
+  - key: observation.state
+    topic: {STATE_TOPIC}
+    msg_type: sensor_msgs/msg/JointState
+    selector: position
+    dtype: float32
+  - key: observation.ee_pose
+    topic: /tf
+    msg_type: tf2_msgs/msg/TFMessage
+    frame_from: base_link
+    frame_to: odom
+
+actions:
+  - key: action
+    topic: {ACTION_TOPIC}
+    msg_type: sensor_msgs/msg/JointState
+    selector: position
+    dtype: float32
+
+resampling:
+  default_policy: nearest
+  tolerance_ms: 100.0
+{extra}"""
+    )
+    return path
 
 
 def tiny_config_yaml(

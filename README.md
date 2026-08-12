@@ -154,8 +154,11 @@ far it got.
 time by more than `timestamps.max_header_receive_skew_ms` (default 60 s), the
 episode fails with a message naming the topic and the observed skew, instead of
 producing a dataset whose timing is silently wrong — the usual cause is an
-unsynchronised clock on the recording or publishing host. Raise the threshold
-or set it to `null` to disable the check; see
+unsynchronised clock on the recording or publishing host. The same threshold
+covers the dynamic transforms behind a TF feature (`frame_from`/`frame_to`),
+where a skewed `/tf` otherwise yields a pose that looks valid and never moves;
+`/tf_static` is exempt, since its stamps are discarded rather than used to look
+poses up. Raise the threshold or set it to `null` to disable the check; see
 [`docs/configuration.md`](docs/configuration.md).
 
 **`--json` on report commands.** `validate-config`, `validate-dataset`,

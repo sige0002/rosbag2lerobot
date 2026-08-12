@@ -117,12 +117,22 @@ class TimestampsConfig:
             (60 s) is deliberately generous: it is meant to catch a broken
             clock, not ordinary transport latency.
 
-    The check only applies to features whose ``stamp_source`` is ``"header"``
-    (with ``"receive"`` the header stamp is not used, so its divergence cannot
-    corrupt anything) and only to messages that actually carry a header stamp.
-    Messages already discarded by ``ResamplingConfig.max_stamp_delay_ms`` are
-    exempt: dropping stale latched messages is an explicit, configured policy,
-    so those messages are handled rather than unexpected.
+    Two paths are checked against the same threshold:
+
+    - Per-feature messages, where ``stamp_source`` is ``"header"`` (with
+      ``"receive"`` the header stamp is not adopted, so its divergence cannot
+      corrupt anything). Messages already discarded by
+      ``ResamplingConfig.max_stamp_delay_ms`` are exempt: dropping stale
+      latched messages is an explicit, configured policy, so those messages
+      are handled rather than unexpected.
+    - Dynamic transforms feeding a TF feature (``frame_from`` / ``frame_to``),
+      whose lookup timeline is keyed on each transform's own header stamp.
+      Static transforms are exempt because their stamps are discarded rather
+      than used for lookup — and ``/tf_static`` being latched, they are
+      legitimately as old as the publisher that sent them.
+
+    In both cases a message with no header stamp (``sec`` and ``nanosec`` both
+    0) is skipped: there is nothing to compare against.
     """
 
     max_header_receive_skew_ms: Optional[float] = 60_000.0

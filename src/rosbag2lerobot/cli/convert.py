@@ -39,7 +39,13 @@ from rosbag2lerobot.progress import (
 from rosbag2lerobot.reader import BagReader, discover_bags, extract_header_stamp_ns
 from rosbag2lerobot.resampler import Resampler, trim_to_valid_range
 from rosbag2lerobot.task_spec import SubtaskSpan, resolve_task
-from rosbag2lerobot.timestamps import NS_PER_MS, StampSkewError, format_skew_error
+from rosbag2lerobot.timestamps import (
+    NS_PER_MS,
+    StampSkewError,
+    first_tf_skew,
+    format_skew_error,
+    format_tf_skew_error,
+)
 from rosbag2lerobot.transforms import TransformLookup, quat_xyzw_to_euler
 from rosbag2lerobot.cli._common import logger, _detect_nvenc, _make_progress
 
@@ -963,8 +969,8 @@ def _process_episode(
         ``frame_index`` and ``timestamp``.
 
     Raises:
-        StampSkewError: If a message's header stamp diverges from its bag
-            receive time by more than
+        StampSkewError: If a message's header stamp — or a dynamic transform's,
+            for TF features — diverges from its bag receive time by more than
             ``timestamps.max_header_receive_skew_ms`` (see
             :mod:`rosbag2lerobot.timestamps`).
     """
@@ -1003,8 +1009,32 @@ def _process_episode(
                 progress.advance()
             if tf_lookup is not None:
                 if topic in tf_static_topics:
+                    # Static transforms are stored as a single matrix and their
+                    # stamps discarded (transforms.TransformLookup.add_static),
+                    # so a skewed one cannot move a pose. Deliberately exempt:
+                    # /tf_static is latched, and its stamps are legitimately as
+                    # old as the publisher that sent them.
                     tf_lookup.add_static(raw_msg)
                 if topic in tf_dynamic_topics:
+                    # Dynamic transforms are keyed on their header stamp, which
+                    # is what the frame grid samples against. A TFMessage has no
+                    # header of its own, so the per-feature guard below never
+                    # sees these — check them here, before they enter the tree.
+                    if skew_limit_ns is not None:
+                        skewed = first_tf_skew(raw_msg, recv_ns, skew_limit_ns)
+                        if skewed is not None:
+                            parent_frame, child_frame, tf_header_ns = skewed
+                            raise StampSkewError(
+                                format_tf_skew_error(
+                                    bag_path=bag_path,
+                                    topic=topic,
+                                    parent_frame=parent_frame,
+                                    child_frame=child_frame,
+                                    header_ns=tf_header_ns,
+                                    receive_ns=recv_ns,
+                                    threshold_ms=skew_limit_ms,  # type: ignore[arg-type]
+                                )
+                            )
                     tf_lookup.add_dynamic(raw_msg)
             header_ns = extract_header_stamp_ns(raw_msg)
             skew_ns = None if header_ns is None else abs(recv_ns - header_ns)
