@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
@@ -59,15 +60,22 @@ def _setup_logging(verbose: bool = False) -> None:
 def _make_progress(total: int, disable: bool) -> Any:
     """Return a tqdm progress bar over *total* episodes, or ``None``.
 
+    A bar is only rendered for an interactive run. tqdm does not detect that
+    itself unless asked, and its carriage returns are unreadable once stdout
+    is a pipe — a log file or ``docker logs`` fills up with redrawn bars. When
+    stdout is not a TTY the caller falls back to plain progress log lines and
+    ``meta/progress.json`` instead.
+
     Args:
         total: Number of episodes to track.
         disable: When True, returns ``None`` (no bar) — used for ``--quiet``
             and ``--json`` so machine-readable output stays uncluttered.
 
     Returns:
-        A configured ``tqdm`` instance, or ``None`` when *disable* is set.
+        A configured ``tqdm`` instance, or ``None`` when *disable* is set or
+        stdout is not a terminal.
     """
-    if disable:
+    if disable or not sys.stdout.isatty():
         return None
     from tqdm import tqdm
 

@@ -31,6 +31,11 @@ from rosbag2lerobot.manifest import (
     sha256_of_path,
     strip_builtin_keys,
 )
+from rosbag2lerobot.progress import (
+    PROGRESS_FILENAME,
+    ProgressReporter,
+    bag_message_count,
+)
 from rosbag2lerobot.reader import BagReader, discover_bags, extract_header_stamp_ns
 from rosbag2lerobot.resampler import Resampler, trim_to_valid_range
 from rosbag2lerobot.task_spec import SubtaskSpan, resolve_task
@@ -280,6 +285,16 @@ def convert(
     bag_sha256_futures = {bp: sha_pool.submit(sha256_of_path, bp) for bp in bag_paths}
     manifest_inputs: list[dict[str, Any]] = []
     progress = _make_progress(len(bag_paths), disable=quiet or json_summary)
+    # Without a bar (piped stdout, --quiet, --json) the run would otherwise be
+    # silent between episodes, so plain progress lines take its place. They go
+    # through the logger, which --quiet / --json have already turned down to
+    # WARNING — those two ask for silence, and meta/progress.json still carries
+    # the same numbers for anything watching the run.
+    heartbeat = ProgressReporter(
+        output_dir / "meta" / PROGRESS_FILENAME,
+        len(bag_paths),
+        log_fn=logger.info if progress is None else None,
+    )
 
     # Wall clock is started here (before the callback closes over it) so each
     # incremental checkpoint can record the elapsed time so far. The
@@ -351,6 +366,7 @@ def convert(
             bag_specs,
             on_episode_done=_on_episode_done,
             skip_failed=skip_failed,
+            progress=heartbeat,
         )
     else:
         episodes_iter = _iter_episodes_serial(
@@ -360,6 +376,7 @@ def convert(
             bag_specs,
             on_episode_done=_on_episode_done,
             skip_failed=skip_failed,
+            progress=heartbeat,
         )
 
     # 6. Write dataset
@@ -408,6 +425,11 @@ def convert(
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     with open(summary_path, "w") as fh:
         json.dump(summary_dict, fh, indent=2)
+
+    # The heartbeat is transient run state: the run is over, and job_summary
+    # (plus meta/info.json) is now the record of it. A progress.json left
+    # behind therefore means the run died, and says where.
+    heartbeat.remove()
 
     if json_summary:
         click.echo(json.dumps(summary_dict, indent=2))
@@ -544,6 +566,7 @@ def _iter_episodes_serial(
     bag_specs: list[tuple[str, list[SubtaskSpan]]],
     on_episode_done: Optional[Callable[[EpisodeResult], None]] = None,
     skip_failed: bool = False,
+    progress: Optional[ProgressReporter] = None,
 ) -> Iterator[list[dict]]:
     """Yield processed episodes one-at-a-time in ``bag_paths`` order.
 
@@ -561,6 +584,9 @@ def _iter_episodes_serial(
     with it disabled (default) the exception propagates and aborts the run,
     preserving the legacy behavior.
 
+    ``progress`` (if given) receives per-message updates for the whole
+    episode, so ``meta/progress.json`` advances continuously on this path.
+
     Episodes shorter than ``cfg.split.min_length`` are filtered here at the
     producer: they are never yielded to the writer and never reported via
     ``on_episode_done``, so dataset totals (stats.json / job_summary /
@@ -569,12 +595,15 @@ def _iter_episodes_serial(
     import time
 
     min_length = cfg.split.min_length
+    read_topics = _read_topics(cfg) if progress is not None else []
     for ep_idx, bag_path in enumerate(bag_paths):
         resolved_task, subtasks = bag_specs[ep_idx]
         logger.info("Episode %d: %s", ep_idx, bag_path)
+        if progress is not None:
+            progress.start_episode(ep_idx, bag_message_count(bag_path, read_topics))
         started = time.monotonic()
         try:
-            frames = _process_episode(bag_path, cfg, resampler)
+            frames = _process_episode(bag_path, cfg, resampler, progress=progress)
         except Exception as exc:  # noqa: BLE001 - guarded by skip_failed
             if not skip_failed:
                 raise
@@ -594,6 +623,8 @@ def _iter_episodes_serial(
                 )
             continue
         elapsed = time.monotonic() - started
+        if progress is not None:
+            progress.finish_episode()
         _tag_episode(frames, resolved_task, subtasks)
         # Episode-length filter (⑨). Drop short episodes before they reach the
         # writer or the job/manifest accounting so they are absent everywhere.
@@ -635,6 +666,7 @@ def _iter_episodes_parallel(
     bag_specs: list[tuple[str, list[SubtaskSpan]]],
     on_episode_done: Optional[Callable[[EpisodeResult], None]] = None,
     skip_failed: bool = False,
+    progress: Optional[ProgressReporter] = None,
 ) -> Iterator[list[dict]]:
     """Yield processed episodes in ``bag_paths`` order using a process pool.
 
@@ -662,6 +694,10 @@ def _iter_episodes_parallel(
     producer (mirroring the serial path): they are never yielded to the writer
     and never reported via ``on_episode_done``, so the dropped index is simply
     hopped over in the contiguous-prefix drain.
+
+    ``progress`` (if given) is updated once per completed episode rather than
+    per message: the decoding happens in worker processes that cannot share
+    this reporter, and several episodes are in flight at once.
     """
     resampler_kwargs: dict[str, Any] = {
         "fps": resampler.fps,
@@ -682,6 +718,7 @@ def _iter_episodes_parallel(
     )
 
     min_length = cfg.split.min_length
+    read_topics = _read_topics(cfg) if progress is not None else []
     pending: dict[int, list[dict]] = {}
     # Indices that will never enter ``pending`` (worker failure or a producer
     # min_length drop); the drain hops over them to keep the prefix contiguous.
@@ -740,6 +777,11 @@ def _iter_episodes_parallel(
                 skipped_idx.add(ep_idx)
                 yield from _drain()
                 continue
+            if progress is not None:
+                progress.episode_completed(
+                    ep_idx,
+                    bag_message_count(bag_paths[ep_idx], read_topics),
+                )
             logger.info(
                 "Episode %d: %s -> %d frames (%.1f s) [task=%r]",
                 ep_idx,
@@ -871,10 +913,28 @@ def _tf_feature_value(fm: FeatureMapping, pose7: object) -> object:
     return np.array([pose7[0], pose7[1], pose7[2], roll, pitch, yaw], dtype=np.float32)
 
 
+def _read_topics(cfg: RobotConfig) -> list[str]:
+    """Return the topics read from a bag for one episode.
+
+    The configured feature topics plus the TF sources that any TF feature
+    samples from. Shared with the progress heartbeat so its message total
+    covers exactly the topics the reader will iterate.
+    """
+    topics = list(cfg.all_topics)
+    for fm in cfg.observations + cfg.actions:
+        if not fm.is_tf_feature:
+            continue
+        for topic in (fm.tf_topic, fm.tf_static_topic):
+            if topic not in topics:
+                topics.append(topic)
+    return topics
+
+
 def _process_episode(
     bag_path: Path,
     cfg: RobotConfig,
     resampler: Resampler,
+    progress: Optional[ProgressReporter] = None,
 ) -> list[dict]:
     """Read one rosbag and produce resampled fixed-fps frames.
 
@@ -882,6 +942,8 @@ def _process_episode(
         bag_path: Path to a single bag directory.
         cfg: Validated robot configuration.
         resampler: Configured Resampler instance.
+        progress: Optional heartbeat reporter, already positioned on this
+            episode by the caller; advanced once per message read.
 
     Returns:
         List of frame dicts, each containing all feature keys plus
@@ -899,15 +961,12 @@ def _process_episode(
         tf_lookup: Optional[TransformLookup] = None
         tf_dynamic_topics: set[str] = set()
         tf_static_topics: set[str] = set()
-        read_topics = list(cfg.all_topics)
+        read_topics = _read_topics(cfg)
         if tf_features:
             tf_lookup = TransformLookup()
             for fm in tf_features:
                 tf_dynamic_topics.add(fm.tf_topic)
                 tf_static_topics.add(fm.tf_static_topic)
-            for t in sorted(tf_dynamic_topics | tf_static_topics):
-                if t not in read_topics:
-                    read_topics.append(t)
 
         # Collect and decode messages referenced by the config. The adopted
         # timestamp per feature follows ``stamp_source`` (header vs. bag
@@ -917,6 +976,8 @@ def _process_episode(
         messages: list[tuple[str, int, object]] = []
         stale_dropped = 0
         for topic, recv_ns, raw_msg in reader.iter_messages(topics=read_topics):
+            if progress is not None:
+                progress.advance()
             if tf_lookup is not None:
                 if topic in tf_static_topics:
                     tf_lookup.add_static(raw_msg)

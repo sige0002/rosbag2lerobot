@@ -94,6 +94,7 @@ class TestIterEpisodesSerial:
             bag_path: Path,
             cfg: _FakeCfg,
             resampler: _FakeResampler,
+            progress: Any = None,
         ) -> list[dict[str, Any]]:
             return list(fake_episodes[bag_path])
 
@@ -151,7 +152,7 @@ class TestIterEpisodesSerial:
             bag_paths[2]: _make_frames(4, tag=2),
         }
 
-        def fake_process_episode(bag_path, cfg, resampler):  # type: ignore[no-untyped-def]
+        def fake_process_episode(bag_path, cfg, resampler, progress=None):  # type: ignore[no-untyped-def]
             return list(fake_episodes[bag_path])
 
         cfg = _FakeCfg(fps=30, min_length=3)
