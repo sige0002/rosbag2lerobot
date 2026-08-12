@@ -104,6 +104,38 @@ class ResamplingConfig:
 
 
 @dataclass
+class TimestampsConfig:
+    """Integrity checks on message timestamps (as opposed to resampling policy).
+
+    Attributes:
+        max_header_receive_skew_ms: Maximum tolerated divergence (ms) between a
+            message's ``header.stamp`` and its bag receive time, checked per
+            message. Exceeding it fails the episode instead of producing a
+            dataset with garbage timing — the usual cause is an unsynchronised
+            clock on the publishing host, which silently shifts every sample
+            time by hours or years. ``None`` disables the check. The default
+            (60 s) is deliberately generous: it is meant to catch a broken
+            clock, not ordinary transport latency.
+
+    The check only applies to features whose ``stamp_source`` is ``"header"``
+    (with ``"receive"`` the header stamp is not used, so its divergence cannot
+    corrupt anything) and only to messages that actually carry a header stamp.
+    Messages already discarded by ``ResamplingConfig.max_stamp_delay_ms`` are
+    exempt: dropping stale latched messages is an explicit, configured policy,
+    so those messages are handled rather than unexpected.
+    """
+
+    max_header_receive_skew_ms: Optional[float] = 60_000.0
+
+    def __post_init__(self) -> None:
+        if (
+            self.max_header_receive_skew_ms is not None
+            and self.max_header_receive_skew_ms < 0
+        ):
+            raise ValueError("max_header_receive_skew_ms must be non-negative")
+
+
+@dataclass
 class SplitConfig:
     """Train/val/test split ratios and an episode length filter.
 
@@ -337,6 +369,7 @@ class RobotConfig:
         custom_msgs: Custom ``.msg`` file references for non-standard types.
         resampling: Resampling policy and tolerance configuration.
         split: Train/val/test split ratios and episode length filter.
+        timestamps: Timestamp integrity checks (header vs. receive skew).
     """
 
     robot_type: str
@@ -348,6 +381,7 @@ class RobotConfig:
     custom_msgs: list[CustomMsgDef] = field(default_factory=list)
     resampling: ResamplingConfig = field(default_factory=ResamplingConfig)
     split: SplitConfig = field(default_factory=SplitConfig)
+    timestamps: TimestampsConfig = field(default_factory=TimestampsConfig)
 
     def __post_init__(self) -> None:
         if self.fps <= 0:
@@ -461,6 +495,24 @@ def _parse_resampling(raw: dict[str, Any] | None) -> ResamplingConfig:
         trim_to_valid=bool(raw.get("trim_to_valid", True)),
         max_stamp_delay_ms=None if max_delay is None else float(max_delay),
         align_to_required=bool(raw.get("align_to_required", True)),
+    )
+
+
+def _parse_timestamps(raw: dict[str, Any] | None) -> TimestampsConfig:
+    """Create a ``TimestampsConfig`` from a raw YAML dict.
+
+    An absent ``max_header_receive_skew_ms`` key keeps the (enabled) default,
+    while an explicit ``null`` disables the check — the two must not collapse
+    into the same thing, so the key's presence is tested rather than its value.
+    """
+    if raw is None:
+        return TimestampsConfig()
+    _check_unknown_keys(raw, {f.name for f in fields(TimestampsConfig)}, "timestamps")
+    if "max_header_receive_skew_ms" not in raw:
+        return TimestampsConfig()
+    skew = raw["max_header_receive_skew_ms"]
+    return TimestampsConfig(
+        max_header_receive_skew_ms=None if skew is None else float(skew)
     )
 
 
@@ -619,6 +671,7 @@ def load_config(path: str | Path) -> RobotConfig:
     custom_msgs = [_parse_custom_msg(c) for c in raw.get("custom_msgs", [])]
     resampling = _parse_resampling(raw.get("resampling"))
     split = _parse_split(raw.get("split"))
+    timestamps = _parse_timestamps(raw.get("timestamps"))
 
     return RobotConfig(
         robot_type=robot_type,
@@ -630,6 +683,7 @@ def load_config(path: str | Path) -> RobotConfig:
         custom_msgs=custom_msgs,
         resampling=resampling,
         split=split,
+        timestamps=timestamps,
     )
 
 
@@ -804,6 +858,16 @@ def config_to_yaml(
             )
         if cfg.resampling.max_stamp_delay_ms is not None:
             lines.append(f"  max_stamp_delay_ms: {cfg.resampling.max_stamp_delay_ms}")
+        lines.append("")
+
+    # Timestamps — same rule: only emitted when it differs from the default, so
+    # a scaffolded config stays minimal but a hand-tuned one round-trips.
+    if cfg.timestamps != TimestampsConfig():
+        lines.append("timestamps:")
+        skew = cfg.timestamps.max_header_receive_skew_ms
+        lines.append(
+            f"  max_header_receive_skew_ms: {'null' if skew is None else skew}"
+        )
         lines.append("")
 
     return "\n".join(lines).rstrip("\n") + "\n"

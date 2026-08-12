@@ -39,6 +39,7 @@ from rosbag2lerobot.progress import (
 from rosbag2lerobot.reader import BagReader, discover_bags, extract_header_stamp_ns
 from rosbag2lerobot.resampler import Resampler, trim_to_valid_range
 from rosbag2lerobot.task_spec import SubtaskSpan, resolve_task
+from rosbag2lerobot.timestamps import NS_PER_MS, StampSkewError, format_skew_error
 from rosbag2lerobot.transforms import TransformLookup, quat_xyzw_to_euler
 from rosbag2lerobot.cli._common import logger, _detect_nvenc, _make_progress
 
@@ -394,6 +395,12 @@ def convert(
             has_subtasks=has_subtasks,
             manifest_extra=manifest_extra,
         )
+    except StampSkewError as exc:
+        # Without --skip-failed a bad clock aborts the run. Re-raise as a
+        # ClickException so the operator gets the actionable message instead of
+        # a traceback; the partial output stays on disk for inspection and can
+        # be cleaned up by re-running with --resume.
+        raise click.ClickException(str(exc)) from exc
     except ImportError:
         # Fallback: materialize the generator so the summary writer can
         # report frame totals. This path should only fire in test/dev
@@ -948,10 +955,20 @@ def _process_episode(
     Returns:
         List of frame dicts, each containing all feature keys plus
         ``frame_index`` and ``timestamp``.
+
+    Raises:
+        StampSkewError: If a message's header stamp diverges from its bag
+            receive time by more than
+            ``timestamps.max_header_receive_skew_ms`` (see
+            :mod:`rosbag2lerobot.timestamps`).
     """
     with BagReader(bag_path, cfg) as reader:
         topic_to_fms = cfg.topic_to_features
         global_delay = cfg.resampling.max_stamp_delay_ms
+        # Timestamp integrity guard: the largest header/receive divergence we
+        # will convert rather than fail on. None disables the check.
+        skew_limit_ms = cfg.timestamps.max_header_receive_skew_ms
+        skew_limit_ns = None if skew_limit_ms is None else skew_limit_ms * NS_PER_MS
 
         # TF features (frame_from/frame_to set) are sampled off the output frame
         # grid from /tf + /tf_static rather than a single topic. When present we
@@ -984,6 +1001,7 @@ def _process_episode(
                 if topic in tf_dynamic_topics:
                     tf_lookup.add_dynamic(raw_msg)
             header_ns = extract_header_stamp_ns(raw_msg)
+            skew_ns = None if header_ns is None else abs(recv_ns - header_ns)
             for fm in topic_to_fms.get(topic, []):
                 # TF features are not decoded per-message; they are sampled off
                 # the output frame grid from the accumulated TransformLookup below.
@@ -996,13 +1014,30 @@ def _process_episode(
                     if fm.max_stamp_delay_ms is not None
                     else global_delay
                 )
-                if (
-                    thr is not None
-                    and header_ns is not None
-                    and abs(recv_ns - header_ns) > thr * 1e6
-                ):
+                if thr is not None and skew_ns is not None and skew_ns > thr * 1e6:
                     stale_dropped += 1
                     continue
+
+                # (B') Timestamp integrity guard. Only messages that survived
+                # the configured stale drop reach here, and only header-stamped
+                # features can be corrupted by a divergent header stamp — for
+                # stamp_source: receive the header is never adopted.
+                if (
+                    skew_limit_ns is not None
+                    and skew_ns is not None
+                    and skew_ns > skew_limit_ns
+                    and fm.stamp_source == "header"
+                ):
+                    raise StampSkewError(
+                        format_skew_error(
+                            bag_path=bag_path,
+                            topic=topic,
+                            feature_key=fm.key,
+                            header_ns=header_ns,  # type: ignore[arg-type]
+                            receive_ns=recv_ns,
+                            threshold_ms=skew_limit_ms,  # type: ignore[arg-type]
+                        )
+                    )
 
                 # (A) Adopted timestamp: header when requested and present,
                 # otherwise the bag receive time.
