@@ -12,6 +12,7 @@
 - [セレクタ](#セレクタ)
 - [カメラ](#カメラ)
 - [リサンプリング](#リサンプリング)
+- [タイムスタンプ整合性 (`timestamps`)](#timestampsheader-と受信時刻の乖離を落とす)
 - [カスタムメッセージ](#カスタムメッセージ)
 - [オプショナルトピック](#オプショナルトピック)
 - [対応メッセージ型](#対応メッセージ型)
@@ -57,6 +58,7 @@ actions:
 | `actions` | ✓ | 行動特徴量のリスト（後述）。 |
 | `custom_msgs` | — | カスタム `.msg` ファイル登録（後述）。 |
 | `resampling` | — | リサンプリング設定（後述）。 |
+| `timestamps` | — | タイムスタンプ整合性チェック（後述）。既定でも有効。 |
 
 ## 特徴量マッピング (`observations` / `actions`)
 
@@ -162,6 +164,8 @@ ROS の QoS（`TRANSIENT_LOCAL`）や depth などで「前に publish された
 
 ### `default_policy` と `tolerance_ms` の選び方
 
+（続けて [`timestamps:`](#timestampsheader-と受信時刻の乖離を落とす) も参照。同じ「header と受信時刻の差」を見ますが、破棄ではなく **失敗**させるチェックです。）
+
 | データ特性 | ポリシー | tolerance |
 |---|---|---|
 | 高レート（≥ fps）センサー、疎なコマンドなし | `nearest` | 50–100 ms |
@@ -169,6 +173,38 @@ ROS の QoS（`TRANSIENT_LOCAL`）や depth などで「前に publish された
 | クロックスキューのあるマルチソース | `nearest` | `1/fps` の半分 |
 
 模倣学習の安全な既定は `hold + 500 ms`。
+
+## `timestamps:`（header と受信時刻の乖離を落とす）
+
+`resampling` が「どう並べるか」の方針なのに対し、`timestamps` は **整合性チェック**のブロックです。
+
+```yaml
+timestamps:
+  max_header_receive_skew_ms: 60000.0   # 既定。null で無効化
+```
+
+`header.stamp` と bag 受信時刻の差が `max_header_receive_skew_ms`（ms）を超えるメッセージが 1 件でもあると、そのエピソードは **失敗**します。エラーには bag / トピック / 特徴量キー / 実測スキュー / しきい値 / 両方の時刻が入ります。
+
+```
+Header/receive timestamp skew in /bags/ep3: topic '/joint_states'
+(feature 'observation.state') has a header stamp 3600000 ms behind its bag
+receive time, over the timestamps.max_header_receive_skew_ms limit of 60000 ms.
+...
+```
+
+**なぜ既定で有効か.** 収録ホストと publisher の時計がずれていると（NTP 未同期、sim time の混入、単調時計でスタンプするドライバなど）、`stamp_source: header` の特徴量は全サンプルの時刻が丸ごとずれます。出来上がったデータセットは一見正常なので、静かに壊れたデータを配るより **その場で落とす**方が安全、という判断です。既定 60 秒は「通信遅延ではありえないが、壊れた時計なら確実に超える」水準に置いています。
+
+**どこに効くか（正確な適用条件）.** 次の 3 つを **すべて**満たすメッセージだけが対象です。
+
+1. その特徴量が `stamp_source: header`（`receive` では header を採用しないので、ずれても出力は壊れない）。
+2. メッセージが header スタンプを実際に持つ（未設定 = `sec` も `nanosec` も 0 のものは対象外）。
+3. `max_stamp_delay_ms` で **破棄されなかった**（破棄はユーザーが明示した処理方針なので、そのメッセージは「対処済み」と見なす）。
+
+**失敗の伝わり方.** `--skip-failed` なしなら **ラン全体を中断**します（出力は確定しない）。`--skip-failed` ありならそのエピソードだけ失敗として記録し、`job_summary.json` の `episodes[].error` にメッセージが残り、残りの bag から確定します。
+
+**回避策.** 時計を直すのが本筋ですが、それ以外に (a) 該当特徴量を `stamp_source: receive` にする、(b) しきい値を上げる、(c) `null` で無効化する、(d) latch 由来の古いメッセージを落としたいだけなら `max_stamp_delay_ms` を使う、があります。
+
+> TRANSIENT_LOCAL の latch トピックを config に含めていると、収録開始のずっと前に publish された 1 件目でこのチェックに掛かることがあります。その場合は (d) の `max_stamp_delay_ms` が適切です（破棄されたメッセージはチェック対象外）。
 
 ## カスタムメッセージ
 

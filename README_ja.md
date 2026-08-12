@@ -118,14 +118,41 @@ rosbag2lerobot quality-report           --dataset /path/to/output_dataset/ -o re
 各コマンドの全オプションは
 [`docs/cli_reference.md`](docs/cli_reference.md) を参照してください。
 
-**`convert` の進捗とランメタデータ.** `convert` はデフォルトで tqdm の ETA 付き
-進捗バーを表示します。`--json` はそのランの `job_summary` を stdout に出力し、
-`--quiet` は進捗バーと INFO ログを抑制、`--skip-failed` は失敗した bag を記録して
-処理を継続します（中断せず、成功エピソードからデータセットを確定）。各ランは
+**`convert` の進捗とランメタデータ.** `convert` は stdout が端末のとき tqdm の
+ETA 付き進捗バーを表示します。`--json` はそのランの `job_summary` を stdout に
+出力し、`--quiet` は進捗バーと INFO ログを抑制、`--skip-failed` は失敗した bag を
+記録して処理を継続します（中断せず、成功エピソードからデータセットを確定）。各ランは
 `meta/` 配下に 2 ファイルを書き出します: `conversion_log.json`（来歴 — 入力
 SHA256・bag 毎のフレーム数/所要時間・コーデック・config スナップショット+ハッシュ・
 rosbag2lerobot/ffmpeg バージョン・実行時刻）と `job_summary.json`（成功/失敗件数・スループット・
-バイト数・ワーカー別/エピソード別の内訳）。
+バイト数・ワーカー別/エピソード別の内訳）。`--manifest-extra FILE` を付けると、
+任意の JSON オブジェクト（ジョブ ID・チケット・作業者など）を
+`conversion_log.json` にマージできます。rosbag2lerobot 自身が書くキーと衝突した
+分は無視されるため、マニフェストが「どう作られたか」を偽ることはできません。
+
+**端末が無いときの進捗.** stdout が TTY でないとき（パイプ・ログファイル・
+`docker logs`）は進捗バーを描画せず（キャリッジリターンの塊になるだけなので）、
+`episode 3/40: 62% (12000/19500 messages)` のようなプレーンな行をログに出します
+（エピソードの 10% ごと、または 30 秒ごとのいずれか早い方）。並行して、実行中の
+変換は `meta/progress.json` を数秒おきに atomic に書き換えます:
+
+```json
+{ "episode_index": 3, "episode_total": 40, "messages_done": 12000,
+  "messages_total": 19500, "updated_at": "2026-08-13T04:05:06.123456+00:00" }
+```
+
+`messages_total` は bag の `metadata.yaml` 由来です（取得できない場合は `null`）。
+`--workers > 1` ではエピソードが別プロセスでデコードされるため、連続ではなく
+エピソード完了ごとの更新になります。このファイルは実行中の一時状態であって
+データセットの一部ではありません。成功したランは削除するので、`progress.json`
+が残っていればそのランは死んでいて、どこまで進んだかを示しています。
+
+**時計の健全性.** メッセージの `header.stamp` と bag 受信時刻の乖離が
+`timestamps.max_header_receive_skew_ms`（既定 60 秒）を超えると、そのエピソードは
+トピック名と実測スキューを示して失敗します。タイミングが静かに壊れたデータセット
+を作らないためで、原因はたいてい収録ホストや publisher 側の時刻同期漏れです。
+しきい値を上げる、または `null` で無効化できます。詳細は
+[`docs/configuration.md`](docs/configuration.md) を参照してください。
 
 **レポート系コマンドの `--json`.** `validate-config` / `validate-dataset` /
 `quality-report` / `audit-timestamps` / `validate-video-metadata` / `inspect` /
@@ -175,6 +202,7 @@ rosbag2lerobot/ffmpeg バージョン・実行時刻）と `job_summary.json`（
 | `--json`             | そのランの `job_summary` JSON を stdout に出力（人間向け `Done.` ログは抑制）。                                  |
 | `--quiet`            | 進捗バーと INFO ログを抑制。                                                                                    |
 | `--skip-failed`      | エピソード単位の失敗を記録して継続（成功分から確定）。デフォルトは失敗で中断。                                   |
+| `--manifest-extra`   | JSON ファイルの内容を `meta/conversion_log.json` にマージ。rosbag2lerobot 所有のキーが優先（衝突分は無視）。      |
 | `-v / --verbose`     | デバッグログを有効化。                                                                                          |
 
 ## サンプルコマンド集
@@ -217,6 +245,31 @@ rosbag2lerobot convert \
 
 チューニング項目とスループット比較の詳細は
 [`docs/performance.md`](docs/performance.md) にあります。
+
+## Docker
+
+リポジトリには [`Dockerfile`](Dockerfile)（python:3.11-slim + ffmpeg + CLI）が
+入っています。bag・config・出力先は実行時にマウントし、イメージの entrypoint は
+`rosbag2lerobot` なので、パスをマウント先に置き換えるだけで CLI と同じ使い方が
+できます:
+
+```bash
+docker build -t rosbag2lerobot .
+
+docker run --rm \
+  -v "$PWD/robot_config.yaml:/config.yaml:ro" \
+  -v "$PWD/bags:/bags:ro" \
+  -v "$PWD/out:/out" \
+  rosbag2lerobot convert --config /config.yaml --bags /bags --output /out
+```
+
+`-u "$(id -u):$(id -g)"` を付けると出力が root ではなく自分の所有になります。
+他のサブコマンドも同様です
+（`docker run --rm -v "$PWD/bags:/bags:ro" rosbag2lerobot inspect --bags /bags`）。
+NVENC は NVIDIA container runtime（`--gpus all`）が必要で、このイメージの保証範囲
+外です（無ければ codec `auto` は `libx264` にフォールバックします）。コンテナには
+既定で TTY が無いため、`convert` はバーを描画せずプレーンな進捗ログと
+`meta/progress.json` を使います。
 
 ## ドキュメント
 

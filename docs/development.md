@@ -33,6 +33,9 @@ rosbag2lerobot/
 │   ├── stats.py             # オンライン統計
 │   ├── diagnostics.py       # F1/F3/F4 診断純関数（FPS 統計・image_size 検出・config↔bag 検証）
 │   ├── audit.py             # F2 監査純関数（生成データセットのタイムスタンプ連続性検査）
+│   ├── timestamps.py        # header ↔ 受信時刻スキューのガード（StampSkewError）
+│   ├── progress.py          # meta/progress.json ハートビート＋非 TTY 進捗ログ
+│   ├── manifest.py          # meta/conversion_log.json の部品（ハッシュ / --manifest-extra）
 │   ├── configs/             # サンプル設定
 │   │   ├── robot_template.yaml
 │   │   ├── so101.yaml
@@ -75,9 +78,14 @@ python -m pytest tests/ -m integration -v
 | `test_writer.py` | LeRobot v3.0 ライター出力 |
 | `test_diagnostics.py` | F1/F3/F4 の純関数（`compute_topic_fps_report` / `detect_image_shape` / `validate_config_against_bag`）— 17 ケース |
 | `test_audit.py` | F2 の純関数（`audit_episode_timestamps` / `AuditReport` / `BoundaryError`）— 14 ケース |
+| `test_stamp_skew.py` | `timestamps.max_header_receive_skew_ms` のパース・発火条件・非発火条件・CLI 挙動（`--skip-failed` との組み合わせ） |
+| `test_progress.py` | `meta/progress.json` のスキーマ／更新間隔／atomic 性、`bag_message_count`、非 TTY 時の進捗ログ |
+| `test_manifest_extra.py` | `--manifest-extra` の検証タイミングと予約キー保護 |
 | `test_e2e.py` | 合成データの E2E |
 | `test_e2e_<robot>.py` | ロボット別 E2E |
 | `test_integration_real.py` | 実 bag 統合（要データ取得） |
+
+`tests/conftest.py` の `tiny_bag` フィクスチャは、2 トピック・画像なしの極小 bag を `tmp_path` に生成します（`header.stamp` と受信時刻のずれを指定可能）。`bagdata/` は gitignore されているので、実データに依存しないテストはこちらを使ってください。
 
 ## 依存関係
 

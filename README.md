@@ -119,13 +119,44 @@ Full options for every command are in
 [`docs/cli_reference.md`](docs/cli_reference.md).
 
 **`convert` progress and run metadata.** `convert` shows a tqdm ETA progress
-bar by default. `--json` emits the run's `job_summary` to stdout, `--quiet`
-suppresses the bar and INFO logs, and `--skip-failed` records a failed bag and
-continues (the dataset finalizes from the good episodes) instead of aborting.
-Every run also writes two files under `meta/`: `conversion_log.json` (provenance
-— input SHA256, per-bag frame counts/timing, codec, config snapshot + hash,
-rosbag2lerobot/ffmpeg versions, run timestamp) and `job_summary.json` (success/fail
-counts, throughput, byte sizes, per-worker / per-episode breakdown).
+bar when stdout is a terminal. `--json` emits the run's `job_summary` to stdout,
+`--quiet` suppresses the bar and INFO logs, and `--skip-failed` records a failed
+bag and continues (the dataset finalizes from the good episodes) instead of
+aborting. Every run also writes two files under `meta/`: `conversion_log.json`
+(provenance — input SHA256, per-bag frame counts/timing, codec, config snapshot
++ hash, rosbag2lerobot/ffmpeg versions, run timestamp) and `job_summary.json`
+(success/fail counts, throughput, byte sizes, per-worker / per-episode
+breakdown). `--manifest-extra FILE` merges your own JSON object (job id,
+ticket, operator…) into `conversion_log.json`; keys that collide with the
+fields rosbag2lerobot writes itself are ignored, so the manifest cannot be made
+to misreport how the dataset was produced.
+
+**Progress without a terminal.** When stdout is not a TTY (a pipe, a log file,
+`docker logs`) no bar is drawn — it would only be carriage-return soup — and
+plain lines like `episode 3/40: 62% (12000/19500 messages)` are logged instead,
+at most every 10% of an episode or every 30 s. In parallel, a running
+conversion maintains `meta/progress.json`, rewritten atomically every couple of
+seconds:
+
+```json
+{ "episode_index": 3, "episode_total": 40, "messages_done": 12000,
+  "messages_total": 19500, "updated_at": "2026-08-13T04:05:06.123456+00:00" }
+```
+
+`messages_total` comes from the bag's `metadata.yaml` (`null` when the bag does
+not report one). With `--workers > 1` the file advances once per completed
+episode rather than continuously, because episodes decode in separate
+processes. It is transient run state, not part of the dataset: a successful run
+deletes it, so a `progress.json` left behind means the run died — and says how
+far it got.
+
+**Clock sanity.** If a message's `header.stamp` diverges from its bag receive
+time by more than `timestamps.max_header_receive_skew_ms` (default 60 s), the
+episode fails with a message naming the topic and the observed skew, instead of
+producing a dataset whose timing is silently wrong — the usual cause is an
+unsynchronised clock on the recording or publishing host. Raise the threshold
+or set it to `null` to disable the check; see
+[`docs/configuration.md`](docs/configuration.md).
 
 **`--json` on report commands.** `validate-config`, `validate-dataset`,
 `quality-report`, `audit-timestamps`, `validate-video-metadata`, `inspect`,
@@ -177,6 +208,7 @@ enable it.
 | `--json`           | Emit the run's `job_summary` JSON to stdout (suppresses the human `Done.` logs).                     |
 | `--quiet`          | Suppress the progress bar and INFO chatter.                                                          |
 | `--skip-failed`    | Record per-episode failures and continue (finalize from good episodes). Default: a failure aborts.   |
+| `--manifest-extra` | JSON file whose object is merged into `meta/conversion_log.json`. Keys owned by rosbag2lerobot win.  |
 | `-v / --verbose`   | Enable debug logging.                                                                                |
 
 ## Example Commands
@@ -219,6 +251,31 @@ rosbag2lerobot convert \
 
 More tuning knobs and a throughput comparison table are in
 [`docs/output_and_performance.md`](docs/output_and_performance.md).
+
+## Docker
+
+The repo ships a [`Dockerfile`](Dockerfile) (python:3.11-slim + ffmpeg + the
+CLI). Bags, config, and output are mounted at run time, and the image's
+entrypoint is `rosbag2lerobot`, so a container invocation is the CLI invocation
+with the paths swapped for mount points:
+
+```bash
+docker build -t rosbag2lerobot .
+
+docker run --rm \
+  -v "$PWD/robot_config.yaml:/config.yaml:ro" \
+  -v "$PWD/bags:/bags:ro" \
+  -v "$PWD/out:/out" \
+  rosbag2lerobot convert --config /config.yaml --bags /bags --output /out
+```
+
+Add `-u "$(id -u):$(id -g)"` to have the dataset written as your own user
+rather than root. Any other subcommand works the same way
+(`docker run --rm -v "$PWD/bags:/bags:ro" rosbag2lerobot inspect --bags /bags`).
+NVENC needs the NVIDIA container runtime (`--gpus all`) and is not part of this
+image's promise; without it the codec `auto` falls back to `libx264`. Because
+the container has no TTY by default, `convert` logs plain progress lines and
+maintains `meta/progress.json` instead of drawing a bar.
 
 ## Documentation
 

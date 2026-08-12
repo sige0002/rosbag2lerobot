@@ -211,15 +211,53 @@ CLI から YAML の一部を上書きできます。一度きりの実験用。
 
 ### 進捗・JSON・失敗継続
 
-`convert` はデフォルトで **tqdm の ETA 付き進捗バー**を表示します。以下のフラグで出力形態と失敗時の挙動を制御できます。
+`convert` は **stdout が端末のとき**に **tqdm の ETA 付き進捗バー**を表示します。以下のフラグで出力形態と失敗時の挙動を制御できます。
 
 | オプション | デフォルト | 説明 |
 |---|---|---|
 | `--json` | off | そのランの `job_summary`（後述）を **stdout に JSON 出力**する。人間向けの `Done.` ログは抑制される。 |
 | `--quiet` | off | 進捗バーと INFO レベルのログを抑制する（WARNING 以上は残る）。 |
 | `--skip-failed` | off | 1 つの bag のデコード/リサンプルが失敗しても、その失敗を **記録してスキップ**し、残りの bag を処理して成功エピソードからデータセットを確定する。**デフォルトは off**で、ワーカーで例外が起きるとラン全体が中断する。 |
+| `--manifest-extra PATH` | なし | JSON ファイル（ルートはオブジェクト）の内容を `meta/conversion_log.json` にマージする。**変換開始前**に存在・パース・オブジェクト性を検証し、駄目なら即エラー。 |
 
 > `--skip-failed` で記録された失敗は `job_summary.json` の `episodes` 配列に `success: false` + `error` 文字列として残ります（`n_failed` にも反映）。
+
+#### 端末が無いとき（パイプ / `docker logs` / CI）
+
+stdout が TTY でない場合、tqdm のバーは **描画しません**（キャリッジリターンでログが埋まるだけのため）。代わりに次の形式のプレーンな行を、**エピソードの 10% ごと、または 30 秒ごとのいずれか早い方**でログ出力します。
+
+```
+episode 3/40: 62% (12000/19500 messages)
+```
+
+`--quiet` / `--json` は従来どおり INFO ログ全体を落とすので、この行も出ません（機械側は下記の `meta/progress.json` を見る）。
+
+#### `meta/progress.json`（実行中のハートビート）
+
+変換中は `meta/progress.json` を **atomic（temp + rename）** に更新します。ポーリング側が壊れた JSON を読むことはありません。
+
+```json
+{
+  "episode_index": 3,
+  "episode_total": 40,
+  "messages_done": 12000,
+  "messages_total": 19500,
+  "updated_at": "2026-08-13T04:05:06.123456+00:00"
+}
+```
+
+| フィールド | 意味 |
+|---|---|
+| `episode_index` | この更新が指すエピソードの 0 始まりインデックス（直列時は処理中のもの、並列時は直近で完了したもの）。 |
+| `episode_total` | このランで変換するエピソード数。 |
+| `messages_done` | そのエピソードで読んだ bag メッセージ数。 |
+| `messages_total` | bag の `metadata.yaml` の件数（**config が読むトピックのみ**を合算）。取得できなければ `null`。 |
+| `updated_at` | 書き込み時刻（ISO-8601 UTC）。 |
+
+- 更新間隔は **約 2 秒**（時計を見るのは 500 メッセージごとなので、実効は粗い方に従う）。エピソード完了時にも 1 回書きます。
+- **`--workers > 1` ではエピソード完了ごとの更新**になります（デコードは別プロセスで走り、同時に複数エピソードが進行するため）。
+- エピソードの読み取りが終わってからライターが動画をエンコードする間は `updated_at` が進みません。「無反応検知」のしきい値はエピソード 1 本のエンコード時間より長く取ってください。
+- **データセットの一部ではありません。** 成功したランは最後にこのファイルを削除します。残っていれば、そのランは死んでいて、どこまで進んだかを示しています。
 
 ### 出力されるランメタデータ
 
@@ -231,6 +269,21 @@ CLI から YAML の一部を上書きできます。一度きりの実験用。
 | `meta/job_summary.json` | **ランの統計**。`n_episodes` / `n_success` / `n_failed`、`total_frames`、`wall_time_s`、スループット `frames_per_min`、`input_bytes` / `output_bytes`、`workers`（ワーカー別の件数/フレーム/時間）、`episodes`（エピソード別の `index` / `bag_path` / `worker` / `success` / `n_frames` / `processing_time_s` / `error`）。 |
 
 `--json` を付けると `job_summary.json` と同じ dict が stdout にも出力されます。
+
+#### `--manifest-extra` で自分の来歴を足す
+
+呼び出し側（人・自動化）の識別子を `conversion_log.json` に残せます。
+
+```bash
+echo '{"job_id": "j-42", "operator": "kim", "ticket": "DATA-1234"}' > extra.json
+
+rosbag2lerobot convert \
+  --config configs/hsr.yaml --bags /bags --output /out \
+  --manifest-extra extra.json
+```
+
+- ルートが **JSON オブジェクト**でなければ、bag を 1 件も読まずにエラーで終了します（長い変換の後で気づくのを避けるため）。
+- **rosbag2lerobot 自身が書くキーは上書きできません**（`codec` / `codec_label` / `ffmpeg_preset` / `ffmpeg_crf` / `fps` / `total_episodes` / `total_frames` / `episode_lengths` / `inputs` / `config_snapshot` / `config_sha256` / `rosbag2lerobot_version` / `ffmpeg_version` / `run_timestamp`）。衝突したキーは **無視**され、警告が出ます。マニフェストが「どう作られたか」を偽れないようにするためです。
 
 ## config の新キー（split / TF 特徴量 / タイポ検出）
 
