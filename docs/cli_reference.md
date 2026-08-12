@@ -182,10 +182,21 @@ CLI から YAML の一部を上書きできます。一度きりの実験用。
 
 | オプション | デフォルト | 説明 |
 |---|---|---|
-| `--video-codec TEXT` | `auto` | 使用する動画コーデック。`auto` は `ffmpeg -encoders` を走査して NVENC があれば `h264_nvenc`、なければ `libx264`。明示指定も可（`libx264` / `libsvtav1` / `h264_nvenc` / `hevc_nvenc` / `av1_nvenc`）。 |
-| `--gpu / --no-gpu` | 自動 | NVENC を使うかどうか。`--gpu` 指定時に NVENC が見つからなければエラーで落ちる。`--no-gpu` は CPU コーデックを強制（再現性重視）。`--video-codec` と矛盾すると警告／エラー。 |
+| `--video-codec TEXT` | `auto` | 使用する動画コーデック。`auto` は NVENC が**使えるか**を判定して `h264_nvenc` / `libx264` を選ぶ（下記）。明示指定も可（`libx264` / `libsvtav1` / `h264_nvenc` / `hevc_nvenc` / `av1_nvenc`）。 |
+| `--gpu / --no-gpu` | 自動 | NVENC を使うかどうか。`--gpu` 指定時に NVENC が使えなければ**起動時に**エラーで落ちる。`--no-gpu` は CPU コーデックを強制（再現性重視。判定自体を行わない）。`--video-codec` と矛盾すると警告／エラー。 |
 | `--ffmpeg-preset TEXT` | コーデック毎の既定値 | ffmpeg の preset。libx264: `veryfast` 等／NVENC: `p1`〜`p7`／libsvtav1: 数値 `0`〜`13`。 |
 | `--ffmpeg-crf INT` | コーデック毎の既定値 | 画質指定。CPU コーデックは `-crf`、NVENC は `-cq` にマップ。 |
+
+#### NVENC 自動判定は「存在」ではなく「使えるか」を見る
+
+`ffmpeg -encoders` に `h264_nvenc` が出ることは、**ビルド時に組み込まれた**ことしか意味しません。NVIDIA runtime 無しのコンテナ（`docker run` に `--gpus all` を付け忘れた場合など）でも一覧には出て、実際に変換を始めると 1 フレーム目で `Cannot load libcuda.so.1` を出して ffmpeg が異常終了します。
+
+そのため `auto` は 2 段階で判定します。
+
+1. `ffmpeg -encoders` に NVENC があるか（無ければ試験エンコードはしない）。
+2. **256x256 を 1 フレームだけ試験エンコード**して成功するか（`-f null -` に捨てる。1 秒未満）。NVENC には最小フレームサイズがあり、これより小さい（128x128 など）と正常な GPU でも失敗するため、サイズは余裕を持たせています。
+
+2 が失敗したときは ffmpeg の**先頭のエラー行**（＝根本原因。以降はその波及で、最後の行は「何も書かれませんでした」という無内容な行になる）を添えて警告を 1 行出し、CPU コーデックにフォールバックします。判定結果はプロセス内でキャッシュされ、1 回しか実行されません。
 
 > コーデックごとのスループット／サイズ比較は [`output_and_performance.md`](output_and_performance.md#スループット比較) を参照。
 

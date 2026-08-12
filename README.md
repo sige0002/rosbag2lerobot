@@ -199,8 +199,8 @@ enable it.
 | `--fps`            | Override the FPS from the config.                                                                    |
 | `--max-episodes`   | Limit number of episodes to convert.                                                                 |
 | `--workers`        | Number of parallel workers (default: 1).                                                             |
-| `--video-codec`    | `auto` (default) picks `h264_nvenc` if NVENC is available, else `libx264`. Accepts `libx264`, `libsvtav1`, `h264_nvenc`, `hevc_nvenc`, `av1_nvenc`. |
-| `--gpu / --no-gpu` | Force GPU (NVENC) on/off. Default: auto-detect via `ffmpeg -encoders`.                               |
+| `--video-codec`    | `auto` (default) picks `h264_nvenc` if NVENC is *usable*, else `libx264`. Accepts `libx264`, `libsvtav1`, `h264_nvenc`, `hevc_nvenc`, `av1_nvenc`. |
+| `--gpu / --no-gpu` | Force GPU (NVENC) on/off. Default: auto-detect. NVENC must be listed by ffmpeg **and** pass a one-frame test encode, so an ffmpeg that lists `h264_nvenc` but cannot reach the driver (a container without `--gpus all`) falls back to `libx264` with a logged reason instead of dying at the first frame. `--gpu` then fails at startup rather than mid-run. |
 | `--ffmpeg-preset`  | Override ffmpeg preset. Codec-specific (`veryfast` for libx264, `p4` for NVENC, `8` for libsvtav1).  |
 | `--ffmpeg-crf`     | Override quality. Mapped to `-crf` for CPU codecs and `-cq` for NVENC codecs.                        |
 | `--dry-run`        | Validate config and bags without writing output.                                                     |

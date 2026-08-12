@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import subprocess
@@ -15,17 +16,37 @@ import click
 logger = logging.getLogger("rosbag2lerobot")
 
 
-def _detect_nvenc() -> bool:
-    """Return True if ffmpeg has at least one ``*_nvenc`` encoder available.
+_NVENC_ENCODERS = ("h264_nvenc", "hevc_nvenc", "av1_nvenc")
 
-    Implemented as a pure function that shells out to ``ffmpeg -encoders``
-    and scans the stdout for the NVENC encoder names. The subprocess call
-    is isolated so unit tests can mock :func:`subprocess.run`.
+# 256x256 is the probe frame size: NVENC refuses anything below its minimum
+# frame dimension ("Frame Dimension less than the minimum supported value" —
+# 128x128 is already too small on current hardware), and a probe that fails
+# on a healthy GPU would be worse than no probe at all.
+_NVENC_PROBE_CMD = [
+    "ffmpeg",
+    "-nostdin",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-f",
+    "lavfi",
+    "-i",
+    "color=black:s=256x256:d=0.1",
+    "-frames:v",
+    "1",
+    "-c:v",
+    "h264_nvenc",
+    "-f",
+    "null",
+    "-",
+]
 
-    Returns:
-        ``True`` if any of ``h264_nvenc``, ``hevc_nvenc``, or
-        ``av1_nvenc`` appears in ffmpeg's encoder list; ``False`` when
-        ffmpeg is missing, times out, or reports no NVENC encoder.
+
+def _ffmpeg_lists_nvenc() -> bool:
+    """Return True if ffmpeg was built with any NVENC encoder.
+
+    Scans ``ffmpeg -encoders``. This only proves the encoder was *compiled
+    in*, which is why :func:`_detect_nvenc` does not stop here.
     """
     try:
         result = subprocess.run(
@@ -38,9 +59,76 @@ def _detect_nvenc() -> bool:
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
-    return any(
-        enc in result.stdout for enc in ("h264_nvenc", "hevc_nvenc", "av1_nvenc")
+    return any(enc in result.stdout for enc in _NVENC_ENCODERS)
+
+
+def _nvenc_probe_error() -> str | None:
+    """Encode one frame with NVENC; return why it failed, or ``None`` if it worked.
+
+    A listed encoder is not a working one: a container without the NVIDIA
+    runtime still advertises ``h264_nvenc`` and then dies at the first frame
+    with ``Cannot load libcuda.so.1``. Actually opening the encoder is the
+    only way to tell the two apart, and one 256x256 frame costs well under a
+    second.
+
+    Returns:
+        ``None`` when the test encode succeeded; otherwise a single-line
+        reason, or why the probe could not be run. The *first* stderr line is
+        the useful one: ffmpeg reports the root cause ("Cannot load
+        libcuda.so.1") and then cascades into generic follow-ups, ending on
+        the useless "Nothing was written into output file".
+    """
+    try:
+        result = subprocess.run(
+            _NVENC_PROBE_CMD,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return "ffmpeg not found"
+    except subprocess.TimeoutExpired:
+        return "test encode timed out"
+    if result.returncode == 0:
+        return None
+    lines = [ln.strip() for ln in (result.stderr or "").splitlines() if ln.strip()]
+    return lines[0] if lines else f"ffmpeg exited {result.returncode}"
+
+
+@functools.lru_cache(maxsize=1)
+def _detect_nvenc() -> bool:
+    """Return True if NVENC is not just present but actually usable here.
+
+    Checked in two steps, cached for the life of the process (the answer
+    cannot change mid-run, and the probe costs a subprocess):
+
+    1. ``ffmpeg -encoders`` lists an NVENC encoder — cheap, and skips the
+       probe entirely on machines that were never built for GPU encoding.
+    2. A one-frame test encode succeeds — the part that catches an ffmpeg
+       built with NVENC running where the driver is not reachable, e.g. a
+       container started without ``--gpus all``. Without this the run would
+       select ``h264_nvenc`` and then die at the first frame.
+
+    A failed probe is logged as a warning with ffmpeg's own reason: falling
+    back to a CPU codec is the right call, but doing it silently would leave
+    an operator wondering why their GPU host encodes at CPU speed.
+
+    Returns:
+        ``True`` only when NVENC both exists and encodes.
+    """
+    if not _ffmpeg_lists_nvenc():
+        return False
+    reason = _nvenc_probe_error()
+    if reason is None:
+        return True
+    logger.warning(
+        "NVENC is listed by ffmpeg but cannot encode here (%s); using a CPU codec. "
+        "In a container, NVENC needs the NVIDIA runtime (docker run --gpus all).",
+        reason,
     )
+    return False
 
 
 def _setup_logging(verbose: bool = False) -> None:

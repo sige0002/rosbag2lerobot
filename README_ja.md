@@ -193,8 +193,8 @@ rosbag2lerobot/ffmpeg バージョン・実行時刻）と `job_summary.json`（
 | `--fps`              | config の FPS をオーバーライド。                                                                                |
 | `--max-episodes`     | 変換するエピソード数の上限。                                                                                    |
 | `--workers`          | 並列ワーカー数（デフォルト: 1）。                                                                               |
-| `--video-codec`      | デフォルト `auto`（NVENC 検出時 `h264_nvenc`、なければ `libx264`）。他に `libx264` / `libsvtav1` / `h264_nvenc` / `hevc_nvenc` / `av1_nvenc` を指定可。 |
-| `--gpu / --no-gpu`   | GPU（NVENC）の強制 ON/OFF。デフォルトは `ffmpeg -encoders` による自動判定。                                    |
+| `--video-codec`      | デフォルト `auto`（NVENC が**実際に使える**なら `h264_nvenc`、でなければ `libx264`）。他に `libx264` / `libsvtav1` / `h264_nvenc` / `hevc_nvenc` / `av1_nvenc` を指定可。 |
+| `--gpu / --no-gpu`   | GPU（NVENC）の強制 ON/OFF。デフォルトは自動判定で、ffmpeg が NVENC を列挙するだけでなく **1 フレームの試験エンコードに成功**するかまで確認する。`h264_nvenc` を列挙するのにドライバへ到達できない環境（`--gpus all` なしのコンテナ等）では、1 フレーム目で落ちる代わりに理由をログに出して `libx264` へフォールバックする（`--gpu` 指定時は実行途中ではなく起動時に失敗）。 |
 | `--ffmpeg-preset`    | ffmpeg の preset 上書き（libx264 は `veryfast`、NVENC は `p4`、libsvtav1 は `8` 等）。                          |
 | `--ffmpeg-crf`       | 画質の上書き。CPU コーデックは `-crf`、NVENC は `-cq` にマップ。                                                |
 | `--dry-run`          | config と bag の検証のみ（出力なし）。                                                                          |

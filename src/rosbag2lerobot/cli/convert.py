@@ -201,17 +201,23 @@ def convert(
     use_gpu = gpu  # --gpu/--no-gpu, None=auto
 
     if effective_codec == "auto":
-        nvenc_available = _detect_nvenc()
         if use_gpu is False:
+            # Decided already; skip the NVENC probe and its subprocess.
             effective_codec = "libx264"
-        elif use_gpu is True:
-            if not nvenc_available:
-                raise click.UsageError(
-                    "--gpu specified but NVENC encoders not found in ffmpeg"
-                )
-            effective_codec = "h264_nvenc"
-        else:  # auto
-            effective_codec = "h264_nvenc" if nvenc_available else "libx264"
+        else:
+            nvenc_available = _detect_nvenc()
+            if use_gpu is True:
+                if not nvenc_available:
+                    raise click.UsageError(
+                        "--gpu specified but NVENC cannot encode here: either "
+                        "ffmpeg has no NVENC encoder, or it has one that fails "
+                        "to open (see the warning above for ffmpeg's reason — "
+                        "in a container, NVENC needs docker run --gpus all). "
+                        "Pass --no-gpu to encode on the CPU."
+                    )
+                effective_codec = "h264_nvenc"
+            else:  # auto
+                effective_codec = "h264_nvenc" if nvenc_available else "libx264"
     elif use_gpu is not None:
         # Explicit codec + --gpu/--no-gpu - validate consistency.
         is_nvenc = effective_codec.endswith("_nvenc")
